@@ -311,6 +311,22 @@ def report(run_id: str = "", config: list[str] = CFG, set_: list[str] = SET) -> 
     typer.echo(render(build_report(cfg, _run_root(cfg, run_id))))
 
 
+def port_is_free(host: str, port: int) -> bool:
+    """Probe the way uvicorn will bind, so the answer means the same thing."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def next_free_port(host: str, start: int, tries: int = 50) -> int | None:
+    return next((p for p in range(start, start + tries) if port_is_free(host, p)), None)
+
+
 @app.command()
 def web(port: int = 8000, host: str = "127.0.0.1", reload: bool = False,
         config: list[str] = CFG) -> None:
@@ -319,10 +335,21 @@ def web(port: int = 8000, host: str = "127.0.0.1", reload: bool = False,
     It reads finished runs and never writes to runs/. Measurement stays on one
     path -- this command starts a window onto the evidence, not a second way to
     produce it.
+
+    The port is checked BEFORE the URL is printed. Announcing an address and
+    then failing to bind it hands the reader a link that does not work and an
+    errno to decode; the port is either free or the command says which one is.
     """
     import os
 
     import uvicorn
+
+    if not port_is_free(host, port):
+        spare = next_free_port(host, port + 1)
+        typer.secho(f"port {port} on {host} is already in use.", fg="red")
+        if spare:
+            typer.echo(f"  try:  uv run kbeval web --port {spare}")
+        raise typer.Exit(1)
 
     os.environ["KBEVAL_CONFIG"] = ",".join(config)
     typer.echo(f"http://{host}:{port}   (read-only; config={','.join(config)})")

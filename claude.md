@@ -200,9 +200,10 @@ mock_a  raw   bare=0.000 rag=0.200 oracle=1.000 headroom=1.000 realiz=0.200
 (mock 기준. 숫자는 배관이 도는 증거일 뿐 데이터 품질의 증거가 아니다)
 
 $ kbeval web            # http://127.0.0.1:8000  (읽기 전용)
+$ kbeval web --port 8010    # 8000이 쓰이는 중이면 빈 포트를 알려주고 exit 1
 
 $ pytest -q
-351 passed
+353 passed
 ```
 
 ### 알려진 한계 — S9 실측 전에 데이터를 키울 것
@@ -352,6 +353,8 @@ temperature/top_p 동시 지정 거부(top_p None이면 payload에서 제외), t
 
 `src/kbeval/web.py` **파일 하나.** FastAPI, 템플릿 없음, 빌드 스텝 없음.
 `kbeval web`으로 띄운다. 상태를 갖지 않으므로 아무 때나 죽였다 살려도 된다.
+포트는 **URL을 출력하기 전에** 확인한다 — 주소를 먼저 알리고 바인드에 실패하면
+읽는 사람 손에 죽은 링크와 errno만 남는다. 사용 중이면 빈 포트를 알려주고 exit 1.
 
 | 라우트 | 내용 |
 |---|---|

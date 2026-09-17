@@ -224,3 +224,32 @@ def test_report_before_scoring_says_what_to_do(tmp_path):
     run("run", *out)
     r = run("report", *out)
     assert "kbeval score" in r.stdout
+
+
+# --- S10 ------------------------------------------------------------------
+
+def test_web_refuses_a_busy_port_before_announcing_a_url():
+    """Printing the address and then failing to bind hands the reader a dead
+    link and an errno. The port is checked first."""
+    import socket
+
+    from kbeval.cli import next_free_port
+
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        busy = held.getsockname()[1]
+
+        r = runner.invoke(app, ["web", "--port", str(busy)])
+        assert r.exit_code == 1
+        assert "already in use" in r.stdout
+        assert f"http://127.0.0.1:{busy}" not in r.stdout      # no dead link offered
+        assert "--port" in r.stdout                            # and a way forward
+
+        assert next_free_port("127.0.0.1", busy) != busy
+
+
+def test_the_suggested_port_is_actually_free():
+    from kbeval.cli import next_free_port, port_is_free
+    p = next_free_port("127.0.0.1", 8000)
+    assert p is not None and port_is_free("127.0.0.1", p)
