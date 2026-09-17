@@ -311,5 +311,23 @@ def report(run_id: str = "", config: list[str] = CFG, set_: list[str] = SET) -> 
     typer.echo(render(build_report(cfg, _run_root(cfg, run_id))))
 
 
+@app.command()
+def web(port: int = 8000, host: str = "127.0.0.1", reload: bool = False,
+        config: list[str] = CFG) -> None:
+    """Serve the read-only viewer.
+
+    It reads finished runs and never writes to runs/. Measurement stays on one
+    path -- this command starts a window onto the evidence, not a second way to
+    produce it.
+    """
+    import os
+
+    import uvicorn
+
+    os.environ["KBEVAL_CONFIG"] = ",".join(config)
+    typer.echo(f"http://{host}:{port}   (read-only; config={','.join(config)})")
+    uvicorn.run("kbeval.web:app", host=host, port=port, reload=reload, log_level="warning")
+
+
 if __name__ == "__main__":
     app()

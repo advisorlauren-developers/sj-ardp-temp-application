@@ -160,9 +160,9 @@ config.py budget.py sweep.py types.py registry.py cli.py → 하나뿐이므로 
 | S7 | Runner (재개 가능) | `kbeval run` | 완료 |
 | S8 | `Scorer` + Report | `kbeval score` / `kbeval report` | 완료 |
 | S9 | Bedrock 실측 | | **다음** |
-| S10 | 읽기 전용 FastAPI 데모 | `uvicorn kbeval.web:app` | (측정 후) |
+| S10 | 읽기 전용 FastAPI 뷰어 | `kbeval web` | 완료 |
 
-### S1–S8 기대 출력 (회귀 확인용)
+### S1–S10 기대 출력 (회귀 확인용)
 
 ```
 $ kbeval plan
@@ -199,8 +199,10 @@ $ kbeval report
 mock_a  raw   bare=0.000 rag=0.200 oracle=1.000 headroom=1.000 realiz=0.200
 (mock 기준. 숫자는 배관이 도는 증거일 뿐 데이터 품질의 증거가 아니다)
 
+$ kbeval web            # http://127.0.0.1:8000  (읽기 전용)
+
 $ pytest -q
-329 passed
+351 passed
 ```
 
 ### 알려진 한계 — S9 실측 전에 데이터를 키울 것
@@ -346,18 +348,44 @@ temperature/top_p 동시 지정 거부(top_p None이면 payload에서 제외), t
 
 ---
 
-### S10 — 읽기 전용 FastAPI 데모
+### S10 — 읽기 전용 뷰어 (완료)
 
-**측정이 끝난 뒤에 붙인다.** 지금 붙이면 보여줄 숫자가 없다(S8 미구현).
+`src/kbeval/web.py` **파일 하나.** FastAPI, 템플릿 없음, 빌드 스텝 없음.
+`kbeval web`으로 띄운다. 상태를 갖지 않으므로 아무 때나 죽였다 살려도 된다.
 
-제약:
-- **읽기 전용.** `runs/*/traces.jsonl`과 `data/packs/*/manifest.json`을 읽어서 보여주기만 한다.
-  웹에서 실험을 실행하지 않는다 — 실행 경로가 둘이 되면 재현 좌표가 갈라진다.
-- FastAPI 하나, 템플릿 최소, 빌드 스텝 없음. `src/kbeval/web.py` 파일 하나.
-- 라우트는 리포트 축과 1:1: `/` (realization_rate 표), `/retrieval` (pack별 hit@k),
-  `/trace/{run_id}/{qid}` (문항 하나의 세 mode 답변 나란히).
-- 측정에 관여하지 않으므로 config 해시에 들어가지 않고, 테스트 대상도 아니다.
-- **UI를 다듬지 않는다.** 이건 계측기 눈금이지 제품이 아니다.
+| 라우트 | 내용 |
+|---|---|
+| `/` | realization + health + 기권/유해 + kendall τ |
+| `/retrieval` | pack별 hit@k · gold_injected · **공변량** |
+| `/questions`, `/q/{qid}` | 문항 하나의 bare·rag·oracle_ref 답변 + judge 판정 나란히 |
+| `/explore` | 임의 질문을 세 mode에 동시 투입 — **기록하지 않음** |
+
+#### 지켜야 하는 경계
+
+- **`runs/`에 절대 쓰지 않는다.** 측정 진입점은 CLI 하나뿐이다. 두 경로가 모두 증거를
+  만들면 재현 좌표가 갈라지고, 출처가 모호한 숫자는 없는 숫자보다 가치가 낮다.
+  → `tests/test_web.py`가 전 라우트 순회 전후로 `runs/` 바이트를 스냅샷 비교한다.
+  → `web.py`에 `run_sweep`·`score_run`·`TraceWriter`·`open(`·`write_text`가
+    등장하지 않는 것도 테스트로 막는다. 의도가 아니라 도달 가능성으로 막는다.
+- **`/explore`는 측정이 아니라고 화면에 쓴다.** 코드에만 적으면 오해하는 건 읽는 사람이다.
+  라벨된 gold가 없으므로 채점도 없고, `oracle_ref`는 참조 문단이 없어 `bare`와 같은
+  답을 낸다 — 이것도 화면에 명시한다. 라벨 없이 보여주면 "차이 없음"이라는 결과로 읽힌다.
+- **mock 실행은 배너로 표시한다.** 숫자를 pack 비교로 읽지 못하게 한다.
+- **공변량은 hit@k 옆에 붙어 있어야 한다.** 청크가 많고 작은 pack은 맞히기도 쉽고
+  주입도 싸다. `n_chunks`·`avg_chars` 없이는 hit@k 차이를 읽을 수 없다.
+- config 해시에 들어가지 않는다. 뷰어는 측정에 관여하지 않는다.
+
+#### 스타일
+
+계측기 눈금이지 제품이 아니다. 색은 `web.py`의 `:root` 한 블록이고 그게 전부다.
+
+```
+--ink:#1D1D1F  --accent:#0A2540  --bg:#FBFBFD
+--surface:#FFFFFF  --line:#E8E8ED  --muted:#6E6E76  --warn:#B4232A
+```
+
+`--warn`은 음수 realization과 error에만 쓴다 — 장식이 아니라 의미다.
+브랜드 색이 확정되면 `--accent` 한 줄만 바꾼다. 움직이는 요소는 넣지 않는다.
 
 ---
 
@@ -385,6 +413,7 @@ uv run kbeval run --limit 1                 # 스펙당 1문항 스모크
 uv run kbeval run                           # 전체 스윕 (재개 가능, 그냥 다시 실행)
 uv run kbeval score                         # traces -> scores.jsonl (재개 가능)
 uv run kbeval report                        # realization / retrieval / abstention / tau
+uv run kbeval web                           # 읽기 전용 뷰어 (runs/에 쓰지 않음)
 
 uv run pytest -q
 uv run ruff check src tests
@@ -397,7 +426,8 @@ uv run ruff check src tests
 - **gold offset 하드코딩.** 반드시 `scripts/make_questions.py`의 anchor 방식으로 유도한다.
   손으로 쓴 숫자는 문서가 바뀌면 조용히 밀리고 테스트도 안 깨진다.
 - **프롬프트를 `.py`에 문자열로 박기.** config 해시에 안 잡혀 서로 다른 실험이 같은 좌표를 갖는다.
-- **UI 다듬기.** 데모는 읽기 전용이고 측정에 관여하지 않는다.
+- **웹에서 측정하기.** 뷰어는 읽기 전용이고 `/explore`는 기록하지 않는다.
+  측정 진입점은 `kbeval run` 하나뿐이다.
 - **`top_k`로 컨텍스트 양 통제.** 토큰 예산으로만 한다.
 - **에러를 오답으로 집계.** `error` 필드로 분리한다.
 - **파싱 실패를 오답으로 집계.** `format_fail`로 분리한다. 20~30B급은 JSON 준수율이 낮아서
