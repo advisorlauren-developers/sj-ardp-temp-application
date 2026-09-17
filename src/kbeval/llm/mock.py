@@ -40,6 +40,22 @@ from .base import LLMResponse, validate
 ABSTAIN = "답변 불가"
 _WORD_RX = re.compile(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*|[가-힣]+")
 
+# The rag context arrives as "(chunk_id) body", and inline_meta puts a
+# "[title: ... | heading_path: ...]" header on its own first line.
+_ID_RX = re.compile(r"^\([^)\s]+\)\s*")
+_META_RX = re.compile(r"^\[[^\]]*\]$")
+
+
+def _content(line: str) -> str:
+    """Strip the chunk id, and reject a line that is only a metadata header.
+
+    A real model does not answer a question with the document's own title bar.
+    Letting the mock do it would penalise exactly the packs that add metadata
+    -- an artefact of this stand-in, reported as a property of the data.
+    """
+    body = _ID_RX.sub("", line).strip()
+    return "" if _META_RX.match(body) else body
+
 
 def _words(text: str) -> set[str]:
     return set(_WORD_RX.findall(text.lower()))
@@ -70,9 +86,12 @@ class MockLLM:
         qw = _words(question)
         best, score = "", 0
         for ln in material:
-            overlap = len(qw & _words(ln))
+            body = _content(ln)
+            if not body:
+                continue
+            overlap = len(qw & _words(body))
             if overlap > score:
-                best, score = ln, overlap
+                best, score = body, overlap
 
         if not best or self._flaky(question):
             answer = ABSTAIN

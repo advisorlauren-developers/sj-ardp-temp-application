@@ -11,11 +11,17 @@ So the contract is narrow and enforced by what the code can reach:
                config.resolved.yaml, and pack manifests
     it WRITES  nothing under runs/, ever
 
-`/explore` is the one interactive page. It answers an ad-hoc question through
-the same agents the sweep uses, and throws the result away -- nothing is
-appended, no run id is minted, and the page says so in the banner. It exists so
-a reader can feel the bare / rag / oracle_ref difference on their own question,
-which a table cannot convey.
+`/qa` is the one interactive page. It answers an ad-hoc question through the
+same agents the sweep uses, and throws the result away -- nothing is appended,
+no run id is minted, and the page says so. It exists so a reader can feel the
+baseline difference on their own question, which a table cannot convey, and it
+shows the retrieved passages alongside the answer: the sources ARE the evidence
+that retrieval happened.
+
+The landing page offers three intents -- Q&A, bug, feature. That is not
+decoration: `intent` is a field on Question and `eval.intents` is a config
+list, so the two inactive cards are waiting on data, not on a screen. They say
+exactly what has to arrive for them to open.
 
 The styling is deliberate and deliberately small: this is an instrument
 readout, so it gets whitespace, tabular figures and one accent colour, and
@@ -109,8 +115,45 @@ button{font:inherit;font-weight:500;padding:11px 20px;border:none;border-radius:
 button:hover{opacity:.9}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .empty{color:var(--muted);padding:26px 0;text-align:center}
-@media (max-width:760px){.grid{grid-template-columns:1fr}main{padding:28px 18px 64px}
-  h1{font-size:26px}.bar{gap:16px;flex-wrap:wrap}}
+.hero{padding:56px 0 8px}
+.hero h1{font-size:40px;letter-spacing:-.03em}
+.hero p{color:var(--muted);font-size:15px;margin:0}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:34px}
+.pick{display:block;background:var(--surface);border:1px solid var(--line);
+  border-radius:16px;padding:26px 22px 22px;color:inherit;transition:.18s ease;
+  transition-property:border-color,transform}
+a.pick:hover{border-color:var(--accent);transform:translateY(-2px);text-decoration:none}
+.pick .name{font-size:17px;font-weight:600;letter-spacing:-.015em}
+.pick .desc{color:var(--muted);font-size:13px;margin-top:6px;line-height:1.55}
+.pick .go{margin-top:18px;font-size:12px;color:var(--accent);font-weight:500}
+.pick.off{opacity:.55}
+.pick.off .go{color:var(--muted)}
+.ask{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+  padding:20px;margin-top:18px}
+.ask form{margin:0}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.chip{border:1px solid var(--line);border-radius:980px;padding:6px 13px;
+  font-size:12px;color:var(--muted);background:var(--bg)}
+a.chip:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+.reply{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+  padding:24px 26px;margin-top:22px}
+.reply .lead{font-size:11px;font-weight:500;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.06em}
+.reply .text{font-size:16px;line-height:1.75;margin-top:10px;white-space:pre-wrap}
+.reply .foot{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);
+  font-size:11px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.src{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-top:10px;
+  background:var(--surface)}
+.src .head{display:flex;gap:10px;align-items:baseline;font-size:11px;color:var(--muted);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.src .head b{color:var(--ink);font-family:inherit;font-size:12px;font-weight:600}
+.src .body{font-size:13px;line-height:1.65;margin-top:8px;white-space:pre-wrap}
+.base{background:var(--bg);border:1px solid var(--line);border-radius:12px;
+  padding:16px 18px;margin-top:10px}
+.base .text{font-size:14px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+@media (max-width:760px){.grid,.cards{grid-template-columns:1fr}
+  main{padding:28px 18px 64px}h1{font-size:26px}.hero h1{font-size:30px}
+  .bar{gap:16px;flex-wrap:wrap}}
 """
 
 
@@ -179,8 +222,9 @@ def page(title: str, active: str, body: str, run: str | None, runs: list[str]) -
 <title>{e(title)} · kbeval</title><style>{CSS}</style></head><body>
 <header><div class="bar">
   <span class="brand">kbeval</span>
-  <nav>{link('/', '개요', 'overview')}{link('/retrieval', '검색', 'retrieval')}
-       {link('/questions', '문항', 'questions')}{link('/explore', '탐색', 'explore')}</nav>
+  <nav>{link('/', '홈', 'home')}{link('/qa', 'Q&amp;A', 'qa')}
+       {link('/report', '실현율', 'overview')}{link('/retrieval', '검색', 'retrieval')}
+       {link('/questions', '문항', 'questions')}</nav>
   <span style="margin-left:auto">{picker}</span>
 </div></header><main>{body}</main></body></html>""")
 
@@ -215,7 +259,7 @@ def mock_banner(c: Config) -> str:
 
 # --- pages ---------------------------------------------------------------
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/report", response_class=HTMLResponse)
 def overview(run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
@@ -389,49 +433,147 @@ def question_detail(qid: str, run: str | None = None) -> HTMLResponse:
     return page(q.qid, "questions", body, rid, list_runs(c))
 
 
-@app.get("/explore", response_class=HTMLResponse)
-def explore(q: str = "", pack: str = "", run: str | None = None) -> HTMLResponse:
+INTENTS = [
+    ("qa", "Q&A", "/qa",
+     "사내 문서를 근거로 기술 질문에 답합니다. 지식 주입 전후를 나란히 보여줍니다."),
+    ("bug", "버그", "/bug",
+     "장애 신고를 과거 처리 이력에 연결합니다."),
+    ("feature", "기능 추가", "/feature",
+     "요청을 기존 스펙·중복 요청과 대조합니다."),
+]
+
+
+def pack_label(c: Config, name: str) -> str:
+    pc = c.packs[name]
+    n = len(pc.transforms)
+    return f"{name} · {pc.chunker}, 변환 {n}개" if n else f"{name} · {pc.chunker}, 변환 없음"
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(run: str | None = None) -> HTMLResponse:
+    c = cfg()
+    live = set(c.eval.intents)
+
+    cards = ""
+    for key, name, href, desc in INTENTS:
+        on = key in live
+        go = "열기 →" if on else "준비 중"
+        tag = "a" if on else "div"
+        attr = f' href="{href}"' if on else ""
+        cards += (f'<{tag} class="pick{"" if on else " off"}"{attr}>'
+                  f'<div class="name">{e(name)}</div>'
+                  f'<div class="desc">{e(desc)}</div>'
+                  f'<div class="go">{go}</div></{tag}>')
+
+    body = f"""<div class="hero">
+<h1>무엇을 물어보시겠습니까?</h1>
+<p>사내 문서를 RAG에 넣었을 때 답변이 실제로 얼마나 좋아지는지 측정하는 도구입니다.</p>
+</div>
+<div class="cards">{cards}</div>
+<div class="banner">활성화된 유형은 <b>{e(", ".join(sorted(live)))}</b> 하나입니다.
+나머지는 화면이 아니라 <b>데이터를 기다리는 중</b>입니다 —
+<code>data/eval/questions.jsonl</code>에 해당 <code>intent</code> 문항이 들어오고
+<code>configs/base.yaml</code>의 <code>eval.intents</code>에 추가되면 열립니다.</div>"""
+    return page("kbeval", "home", body, pick_run(c, run), list_runs(c))
+
+
+@app.get("/bug", response_class=HTMLResponse)
+@app.get("/feature", response_class=HTMLResponse)
+def not_yet(run: str | None = None) -> HTMLResponse:
+    c = cfg()
+    body = """<h1>준비 중</h1>
+<p class="sub">이 유형의 문항이 아직 평가 세트에 없습니다.</p>
+<div class="banner">빈 화면을 먼저 만들지 않습니다. 라벨된 문항 없이 답변만 보여주면
+좋아 보이는지 아닌지를 판단할 근거가 없고, 그건 측정이 아니라 인상입니다.<br><br>
+필요한 것: <code>scripts/make_questions.py</code>에 해당 intent 문항과 gold 앵커 추가 →
+<code>data/eval/questions.jsonl</code> 재생성 →
+<code>configs/base.yaml</code>의 <code>eval.intents</code>에 추가.</div>
+<p class="sub"><a href="/qa">Q&amp;A로 가기 →</a></p>"""
+    return page("준비 중", "home", body, pick_run(c, run), list_runs(c))
+
+
+@app.get("/qa", response_class=HTMLResponse)
+def qa(q: str = "", pack: str = "", run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
     pack = pack if pack in c.packs else next(iter(c.sweep.pack))
     agent = c.sweep.agent[0]
 
-    opts = "".join(f'<option value="{e(p)}"{" selected" if p == pack else ""}>{e(p)}</option>'
-                   for p in c.sweep.pack)
-    form = (f'<form method="get"><input type="text" name="q" value="{e(q)}" '
-            f'placeholder="질문을 입력하세요 — 예: E411 인증 실패 원인이 뭔가요?">'
-            f'<select name="pack">{opts}</select>'
-            f'<button type="submit">비교</button></form>')
+    opts = "".join(
+        f'<option value="{e(p)}"{" selected" if p == pack else ""}>{e(pack_label(c, p))}</option>'
+        for p in c.sweep.pack)
+    samples = "".join(
+        f'<a class="chip" href="/qa?q={html.escape(x.query, quote=True)}&pack={e(pack)}">'
+        f'{e(x.query[:34])}…</a>'
+        for x in load_questions(c.eval.questions, c.eval.intents)[:4])
 
-    cards = ""
+    ask = f"""<div class="ask"><form method="get">
+<input type="text" name="q" value="{e(q)}" autofocus
+       placeholder="예: OLT에서 E411 인증 실패가 뜨는데 어떻게 조치하나요?">
+<select name="pack">{opts}</select>
+<button type="submit">질문</button></form>
+<div class="chips">{samples}</div></div>"""
+
+    answer_html = ""
     if q.strip():
         from .types import Question
-        probe = Question(qid="explore", intent="qa", query=q.strip(), answerable=True)
-        for mode in ("bare", "rag", "oracle_ref"):
-            a = build_agent_for(c, agent, mode, pack if mode == "rag" else None)
-            res = a.answer(probe)
-            answer = (f"<span class='neg'>error · {e(res.error)}</span>" if res.error
-                      else e(res.text))
-            chunks = ""
-            if res.injected_chunk_ids:
-                chunks = (f"<div class='chunks'>injected {len(res.injected_chunk_ids)} · "
-                          f"{res.injected_tokens} tok of {c.fixed.context_token_budget}"
-                          + (f" · skipped {len(res.skipped_chunk_ids)}"
-                             if res.skipped_chunk_ids else "")
-                          + "<br>" + e(", ".join(res.injected_chunk_ids)) + "</div>")
-            label = "oracle_ref (참조 문단 없음 — bare와 동일)" if mode == "oracle_ref" else mode
-            cards += (f"<div class='mode'><h3>{e(label)}"
-                      + (f" · {e(pack)}" if mode == "rag" else "")
-                      + f"</h3><div class='meta'>{e(agent)} · "
-                      f"{e(c.agents[agent].provider)}</div>"
-                      f"<div class='answer'>{answer}</div>{chunks}</div>")
-        cards = f"<div class='grid'>{cards}</div>"
+        probe = Question(qid="qa-live", intent="qa", query=q.strip(), answerable=True)
 
-    body = f"""<h1>탐색</h1>
-<p class="sub">같은 질문을 세 mode에 동시에 던져 지식 주입의 차이를 직접 봅니다.</p>
-<div class="banner"><b>측정이 아닙니다.</b> 이 질의는 <code>runs/</code>에 기록되지 않고
-run id도 만들지 않습니다. 라벨된 gold가 없으므로 채점도 없습니다 —
-<code>oracle_ref</code>는 참조 문단이 없어 <code>bare</code>와 같은 답을 냅니다.
-측정은 <code>kbeval run</code> 한 경로뿐입니다.</div>
-{form}{cards}"""
-    return page("탐색", "explore", body, rid, list_runs(c))
+        rag_agent = build_agent_for(c, agent, "rag", pack)
+        rag = rag_agent.answer(probe)
+        base = build_agent_for(c, agent, "bare", None).answer(probe)
+
+        pk = rag_agent.deps.pack
+        score_of = {h.chunk_id: h for h in rag.retrieved}
+        sources = ""
+        for i, cid in enumerate(rag.injected_chunk_ids, start=1):
+            hit = score_of.get(cid)
+            ch = pk.get(cid) if pk.has(cid) else None
+            head = (ch.meta.get("heading_path") or ch.meta.get("title") or "") if ch else ""
+            text = ch.text if ch else ""
+            if text.startswith("["):                     # inline_meta header line
+                text = text.split("\n", 1)[-1]
+            sources += (f'<div class="src"><div class="head">'
+                        f'<span>{i}</span><b>{e(head)}</b>'
+                        f'<span>{e(cid)}</span>'
+                        f'<span>score {hit.score:.2f}</span>' if hit else
+                        f'<div class="src"><div class="head"><span>{i}</span>'
+                        f'<b>{e(head)}</b><span>{e(cid)}</span>')
+            sources += f'</div><div class="body">{e(text.strip())}</div></div>'
+
+        if not rag.injected_chunk_ids:
+            sources = ('<div class="base"><div class="text">'
+                       '검색된 문단이 없습니다 — 질문의 어휘가 코퍼스와 겹치지 않습니다.'
+                       '</div></div>')
+
+        rag_text = (f"<span class='neg'>error · {e(rag.error)}</span>" if rag.error
+                    else e(rag.text))
+        base_text = (f"<span class='neg'>error · {e(base.error)}</span>" if base.error
+                     else e(base.text))
+        skipped = (f" · 예산 초과로 건너뜀 {len(rag.skipped_chunk_ids)}건"
+                   if rag.skipped_chunk_ids else "")
+
+        answer_html = f"""<div class="reply">
+<div class="lead">답변 · 문서 근거</div>
+<div class="text">{rag_text}</div>
+<div class="foot">{e(agent)} ({e(c.agents[agent].provider)}) ·
+ {e(pack_label(c, pack))} · 주입 {len(rag.injected_chunk_ids)}청크
+ {rag.injected_tokens}/{c.fixed.context_token_budget} tok{e(skipped)} ·
+ 검색 후보 {len(rag.retrieved)}건</div></div>
+
+<h2>근거로 쓰인 문단</h2>
+<p class="sub">BM25가 실제로 검색해서 프롬프트에 넣은 것들입니다. 여기 없으면 모델도 못 봤습니다.</p>
+{sources}
+
+<h2>지식 주입 없이 물으면</h2>
+<p class="sub">같은 모델, 같은 프롬프트, 자료만 뺀 baseline입니다. 이 차이가 측정 대상입니다.</p>
+<div class="base"><div class="text">{base_text}</div></div>"""
+
+    body = f"""<h1>기술지원 Q&amp;A</h1>
+<p class="sub">사내 문서(OLT·BNG 가이드)를 근거로 답합니다. 근거 문단을 함께 보여줍니다.</p>
+{mock_banner(c)}
+<div class="banner"><b>측정이 아닙니다.</b> 여기서 던진 질문은 <code>runs/</code>에
+기록되지 않고 run id도 만들지 않습니다. 라벨된 gold가 없어 채점도 없습니다 —
+점수가 필요하면 <code>kbeval run</code> 경로 하나뿐입니다.</div>
+{ask}{answer_html}"""
+    return page("Q&A", "qa", body, rid, list_runs(c))

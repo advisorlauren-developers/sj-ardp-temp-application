@@ -201,9 +201,10 @@ mock_a  raw   bare=0.000 rag=0.200 oracle=1.000 headroom=1.000 realiz=0.200
 
 $ kbeval web            # http://127.0.0.1:8000  (읽기 전용)
 $ kbeval web --port 8010    # 8000이 쓰이는 중이면 빈 포트를 알려주고 exit 1
+  /  랜딩 → /qa  질문·답변·근거·baseline → /report  실현율
 
 $ pytest -q
-353 passed
+362 passed
 ```
 
 ### 알려진 한계 — S9 실측 전에 데이터를 키울 것
@@ -277,6 +278,11 @@ $ pytest -q
 그래서 **unanswerable 문항의 rag 모드에서 mock은 기권하지 않고 distractor로 답한다.**
 파이프라인 문제가 아니라 이 mock의 천장이다. abstention은 실모델에서만 측정되며,
 채점기 자체는 S8에서 조작된 답변으로 단위 테스트한다.
+
+단, mock이 **메타데이터 헤더 줄(`[title: … | heading_path: …]`)을 답변으로 고르는 것은
+고쳤다.** 실제 모델은 문서의 제목 바로 질문에 답하지 않는다. 그대로 두면
+메타데이터를 붙이는 pack — 즉 좋은 pack — 만 골라서 불리해지고, 그건 데이터의 성질이
+아니라 이 대역 모델의 인공물이다. (집계 수치는 바뀌지 않았다. 둘 다 오답이었다.)
 
 ### S7 — Runner (완료)
 
@@ -358,10 +364,30 @@ temperature/top_p 동시 지정 거부(top_p None이면 payload에서 제외), t
 
 | 라우트 | 내용 |
 |---|---|
-| `/` | realization + health + 기권/유해 + kendall τ |
+| `/` | 랜딩. 의도 3종(Q&A · 버그 · 기능추가) 카드 |
+| `/qa` | **질문 → 답변 → 근거 문단 → baseline 비교.** 기록하지 않음 |
+| `/bug`, `/feature` | 준비 중 (해당 intent 문항이 아직 없음) |
+| `/report` | realization + health + 기권/유해 + kendall τ |
 | `/retrieval` | pack별 hit@k · gold_injected · **공변량** |
 | `/questions`, `/q/{qid}` | 문항 하나의 bare·rag·oracle_ref 답변 + judge 판정 나란히 |
-| `/explore` | 임의 질문을 세 mode에 동시 투입 — **기록하지 않음** |
+
+#### 랜딩의 카드 3개는 장식이 아니다
+
+`intent`는 `Question`의 필드이고 `eval.intents`는 config 리스트다. 그래서 비활성 카드는
+**화면이 아니라 데이터를 기다린다.** 무엇이 와야 열리는지를 화면에 적는다 —
+`make_questions.py`에 문항+gold 앵커 → `questions.jsonl` 재생성 → `eval.intents`에 추가.
+
+라벨된 문항 없이 답변만 보여주는 화면은 만들지 않는다. 좋은지 나쁜지 판단할 근거가
+없으면 그건 측정이 아니라 인상이다.
+
+#### `/qa`가 반드시 같이 보여주는 것
+
+- **검색된 문단 원문** (rank·score·heading_path). 답변만 있고 출처가 없으면
+  모델이 지어낸 것과 구별되지 않는다. 여기 없는 청크는 모델도 보지 못했다.
+- **주입된 것만** 출처로 표시한다. 예산에 밀려 탈락한 청크를 출처로 적으면 거짓말이다.
+- **baseline(bare) 답변**을 나란히. 같은 모델·같은 프롬프트에서 자료만 뺀 것이고,
+  그 차이가 이 프로젝트의 측정 대상이다.
+- **어느 pack이 답했는지**와 주입 토큰/예산. 독립변수를 숨기면 데모가 반증 불가능해진다.
 
 #### 지켜야 하는 경계
 
