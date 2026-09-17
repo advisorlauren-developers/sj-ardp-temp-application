@@ -104,3 +104,46 @@ def test_resolved_dump_round_trips_to_the_same_hash(cfg, tmp_path):
     out = tmp_path / "config.resolved.yaml"
     dump_resolved(cfg, out)
     assert load_config([out]).hash == cfg.hash
+
+
+# --- the trace coordinate and the grading coordinate are separate ---------
+
+def test_swapping_the_judge_does_not_move_the_run_id(cfg, base_yaml):
+    """The judge does not change a single answer -- it changes how answers are
+    graded. Folding it into the run id would invalidate the coordinate of
+    traces it never touched, and a rerun would have to buy them again."""
+    other = load_config([base_yaml],
+                        ['judge={"agent":{"provider":"bedrock","id":"us.anthropic.claude-opus-5"}}'])
+    assert other.hash == cfg.hash
+    assert other.scoring_hash != cfg.scoring_hash
+
+
+def test_scoring_thresholds_belong_to_the_grading_coordinate(cfg, base_yaml):
+    other = load_config([base_yaml], ["scoring.min_headroom=0.2"])
+    assert other.hash == cfg.hash
+    assert other.scoring_hash != cfg.scoring_hash
+
+
+def test_editing_the_judge_prompt_moves_only_the_grading_coordinate(cfg, base_yaml, tmp_path):
+    edited = tmp_path / "judge.md"
+    edited.write_text(cfg.prompts.read("judge") + "\n추가 지시.\n", encoding="utf-8")
+    other = load_config([base_yaml], [f"prompts.judge={edited}"])
+    assert other.hash == cfg.hash
+    assert other.scoring_hash != cfg.scoring_hash
+
+
+def test_editing_a_candidate_prompt_moves_the_run_id(cfg, base_yaml, tmp_path):
+    edited = tmp_path / "system.md"
+    edited.write_text(cfg.prompts.read("system_qa") + "\n6. 한 줄 더.\n", encoding="utf-8")
+    other = load_config([base_yaml], [f"prompts.system_qa={edited}"])
+    assert other.hash != cfg.hash
+
+
+@pytest.mark.parametrize("override", [
+    "fixed.context_token_budget=4000",
+    "eval.gold_overlap_ratio=0.5",
+    "retrieval.candidate_k=3",
+    "run.seed=7",
+])
+def test_control_variables_still_move_the_run_id(cfg, base_yaml, override):
+    assert load_config([base_yaml], [override]).hash != cfg.hash

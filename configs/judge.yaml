@@ -1,0 +1,22 @@
+# S9 스텝 3: judge를 frontier로 교체.
+#
+# judge는 고정이고 candidate보다 훨씬 강해야 한다. 30B를 30B로 채점하면
+# 신뢰구간이 무의미하다.
+#
+# Anthropic 모델은 Bedrock에서 INFERENCE_PROFILE 전용이라 `us.` 접두사가 필요하다.
+# 접두사를 빼면 "존재하지 않는 모델"처럼 실패한다.
+
+judge:
+  agent: {provider: bedrock, endpoint: runtime, id: "us.anthropic.claude-sonnet-5",
+          family: dense}
+
+  # Sonnet 5는 temperature를 거부한다("deprecated for this model").
+  # candidate는 temperature=0이 필요하므로 judge만 별도 블록을 갖는다.
+  # 결과적으로 judge는 모델 기본 샘플링으로 채점한다 — 판정이 0/1 이진이라
+  # 분산이 제한되지만, 완전 결정적이지는 않다는 점을 알고 읽어야 한다.
+  llm:
+    temperature: null
+    # Sonnet 5는 reasoning을 별도 블록으로 낸다. 512로는 추론이 예산을 다 먹고
+    # text 블록이 비어서 나온다(실제로 441토큰을 추론에 쓰고 답이 0이었다).
+    max_tokens: 2048
+    region: us-west-2

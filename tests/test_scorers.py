@@ -194,3 +194,35 @@ def test_the_judge_is_one_fixed_model_for_the_whole_sweep(cfg):
     """A judge that changed between packs would move scores on its own."""
     assert cfg.judge.agent.id not in {a.id for a in cfg.agents.values()}
     assert not any("judge" in f for pc in cfg.packs.values() for f in pc.model_fields_set)
+
+
+def test_a_failed_judge_call_is_retried_on_the_next_run(tmp_path):
+    """Infrastructure, not a verdict. Leaving it settled would turn a transient
+    outage into a permanent hole in the denominator."""
+    import json
+
+    from kbeval.eval.scoring import completed
+    p = tmp_path / "scores.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in [
+        {"spec_key": "a|rag|mid", "qid": "q1", "repeat": 0, "judge": {"correctness": 1.0}},
+        {"spec_key": "a|rag|mid", "qid": "q2", "repeat": 0,
+         "judge": {"skipped": "judge_error"}},
+        {"spec_key": "a|rag|mid", "qid": "q3", "repeat": 0, "judge": {"skipped": "error"}},
+        {"spec_key": "a|rag|mid", "qid": "q4", "repeat": 0, "judge": {"format_fail": 1.0}},
+    ]) + "\n", encoding="utf-8")
+
+    done = {k[1] for k in completed(p)}
+    assert "q2" not in done          # judge outage -> retry
+    assert {"q1", "q3", "q4"} <= done  # graded / nothing to grade / a real verdict
+
+
+def test_a_judge_that_only_reasoned_is_not_retried_forever(judge, monkeypatch):
+    """A blown output budget is not an outage. Classifying it as retryable
+    would loop on every rerun and never produce a verdict."""
+    from kbeval.eval.scoring import RETRYABLE
+    from kbeval.llm.base import LLMResponse
+    monkeypatch.setattr(judge.llm, "generate",
+                        lambda s, u: LLMResponse(text="", error="reasoning_only"))
+    s = judge.score(trace(), ANSWERABLE)
+    assert s["skipped"] == "judge_budget"
+    assert "judge_budget" not in RETRYABLE

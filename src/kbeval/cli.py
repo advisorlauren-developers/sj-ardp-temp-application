@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 
 from .config import load_config
+from .env import load_dotenv
 from .eval import build_report, render, score_run
 from .packs import build_chunker, build_pack, load_questions
 from .retrieval import DEFAULT_KS, build_retriever, summarize
@@ -21,7 +22,13 @@ SET = typer.Option(None, "--set", "-s", help="override, e.g. -s fixed.n_repeat=3
 
 @app.callback()
 def main() -> None:
-    """Forces Typer into subcommand mode."""
+    """Forces Typer into subcommand mode, and loads .env once.
+
+    Credentials live in the environment and never in config -- a key in
+    configs/ would be hashed into the run id and copied into every
+    config.resolved.yaml.
+    """
+    load_dotenv()
 
 
 @app.command()
@@ -297,7 +304,8 @@ def score(run_id: str = "", resume: bool = True, config: list[str] = CFG,
     cfg = load_config(config, set_)
     s = score_run(cfg, _run_root(cfg, run_id), resume=resume)
     typer.echo(f"rows    : {s.rows}   scored={s.scored}  resumed={s.resumed}")
-    typer.echo(f"skipped : {s.skipped_errors} (provider errors -- NOT counted as wrong answers)")
+    typer.echo(f"skipped : {s.skipped_errors} candidate error(s) -- no answer to grade")
+    typer.echo(f"judge   : {s.judge_failures} judge call failure(s) -- retried on the next run")
     typer.echo(f"format  : {s.format_fails} judge parse failure(s)")
     for n in s.notes:
         typer.secho(f"note    : {n}", fg="yellow")

@@ -63,7 +63,7 @@ class JudgeScorer:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.llm = build_llm(cfg.judge.agent, cfg.llm)
+        self.llm = build_llm(cfg.judge.agent, cfg.judge.llm or cfg.llm)
         self.template = cfg.prompts.read("judge")
         self._packs: dict[str, Any] = {}
 
@@ -94,7 +94,11 @@ class JudgeScorer:
         )
         r = self.llm.generate("", user)
         if r.error:
-            return {"skipped": "judge_error", "judge_error": r.error}
+            # reasoning_only is a budget problem, not an outage: the judge spent
+            # its whole output on thinking. Retrying it unchanged would loop, so
+            # it is recorded as final and the fix is max_tokens.
+            kind = "judge_budget" if r.error == "reasoning_only" else "judge_error"
+            return {"skipped": kind, "judge_error": r.error}
 
         verdict = parse_verdict(r.text)
         if verdict is None:

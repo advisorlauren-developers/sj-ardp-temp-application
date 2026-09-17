@@ -159,7 +159,7 @@ config.py budget.py sweep.py types.py registry.py cli.py → 하나뿐이므로 
 | S6 | `LLMClient` + `Agent` + 토큰 예산 | `kbeval ask` | 완료 |
 | S7 | Runner (재개 가능) | `kbeval run` | 완료 |
 | S8 | `Scorer` + Report | `kbeval score` / `kbeval report` | 완료 |
-| S9 | Bedrock 실측 | | **다음** |
+| S9 | Bedrock 실측 | `kbeval run -c configs/bedrock.yaml` | 완료 (1차) |
 | S10 | 읽기 전용 FastAPI 뷰어 | `kbeval web` | 완료 |
 
 ### S1–S10 기대 출력 (회귀 확인용)
@@ -205,10 +205,32 @@ $ kbeval web --port 8010    # 8000이 쓰이는 중이면 빈 포트를 알려�
   측정 /lab  실현율 → /lab/retrieval → /lab/questions
 
 $ pytest -q
-385 passed
+414 passed
 ```
 
-### 알려진 한계 — S9 실측 전에 데이터를 키울 것
+### 알려진 한계 — 1차 실측이 확인해준 것
+
+**배관은 전부 맞고, 데이터가 부족하다.** 실모델 4종 × 7문항 실측 결과:
+
+```
+qwen32   bare=0.200  rag=1.000  oracle=1.000   realization=1.000  (raw/mid/full 동일)
+gemma27  bare=0.000  rag=1.000  oracle=1.000   realization=1.000  (동일)
+gptoss20 bare=0.000  rag=1.000  oracle=1.000   realization=1.000  (동일)
+nemotron30 bare=0.000 rag=1.000 oracle=0.800   realization=1.250  (동일)
+kendall τ: 전 쌍 undefined — 모든 pack이 동률
+```
+
+**모든 모델이 모든 pack에서 만점이다.** 지식만 주면 다 맞히므로 전처리가 이길
+여지가 없다. 리포트가 이걸 자동으로 진단해서 노트로 출력한다("the pack axis did
+not discriminate ... a property of the QUESTION SET").
+
+`nemotron30`의 realization 1.25는 `rag > oracle_ref`라는 뜻이다. 참조 문단은 한
+문단인데 검색은 섹션 전체를 넘겨서 생긴 일이고, **천장에 대한 진짜 발견**이다.
+
+흥미로운 한 줄: `gemma27`·`nemotron30`이 unanswerable 문항에서 `raw` pack일 때는
+100% 기권하는데 `mid`/`full`일 때는 50%만 기권했다. 잘 정리된 컨텍스트가 오히려
+자신 있게 지어내게 만든 것이다. n=2라 결론은 아니지만, **unanswerable 문항이
+존재하는 이유가 바로 이 메커니즘이다.**
 
 현재 코퍼스는 문서 2개 862자다. **이 크기에서는 세 축이 측정되지 않는다.**
 
@@ -220,9 +242,14 @@ $ pytest -q
 - 전체 코퍼스가 ~431 토큰이라 `context_token_budget=3000`이 한 번도 걸리지 않는다.
   통제변수가 작동하지 않는 상태다.
 
-배관 검증이 목적인 샘플 데이터셋이므로 S8까지는 이대로 간다.
-**실측(S9) 직전에** 문서를 수십 건으로 키운다. 그때까지 나오는 숫자는
-파이프라인이 도는지의 증거이지 데이터 품질의 증거가 아니다.
+다음에 필요한 것은 코드가 아니다. **문항이 먼저다** — 지금 세트는 근거만 주면
+누구나 맞히는 난이도라 pack 차이가 나타날 자리가 없다. 필요한 것:
+
+1. **어려운 문항** — 여러 문단에 흩어진 근거, 표·절차 참조, 유사 오류코드 혼동.
+2. **문서 수십 건** — 검색이 실패할 수 있어야 hit@k가 의미를 갖고,
+   토큰 예산이 실제로 걸려야 통제변수가 작동한다.
+3. **중복과 표기 흔들림** — 지금은 `dedup`·`normalize_terms`가 할 일이 없어
+   `full`이 `mid`의 복제본이다.
 
 ---
 
@@ -339,20 +366,56 @@ $ pytest -q
 - **Wilcoxon은 문항 단위 paired.** n<5거나 차이가 전부 0이면 p를 내지 않는다.
 - **kendall tau는 pack 순위가 전부 동률이면 계산하지 않는다**(정의되지 않음).
 
-### S9 — Bedrock 실측
+### S9 — Bedrock 실측 (1차 완료)
 
-순서를 지킨다.
+인증은 `.env`의 `BEDROCK_API_KEY`(ABSK 장기 키). `env.py`가 `AWS_BEARER_TOKEN_BEDROCK`로
+별칭을 걸어 boto3와 mantle 양쪽에서 쓴다. **키는 config에 절대 들어가지 않는다** —
+들어가면 run_id에 해시되고 `config.resolved.yaml`에 복사되고 config 해시를 찍는
+웹 페이지에 렌더링된다.
 
-1. 모델 ID 확인: `aws bedrock list-foundation-models --region <r>`
-   - 30B급 후보: `qwen.qwen3-32b`(dense 32B), `google.gemma-3-27b`(PT/IT 확인 필수),
-     `openai.gpt-oss-20b`(MoE active ~3B), `nvidia.nemotron-nano-3-30b`(MoE)
-   - **dense와 MoE를 같은 층으로 평균내지 말 것.** 활성 파라미터가 10배 차이난다.
-2. `--limit 1`로 모델별 호출만 스모크 테스트 (judge는 mock으로)
-3. judge를 frontier 모델로 교체
-4. 전체 스윕
+확정된 모델 ID (us-west-2, `list_foundation_models`):
 
-Bedrock 함정: runtime/mantle ID 상이, `us.`/`global.` 접두사, HTTP 200+에러본문,
-temperature/top_p 동시 지정 거부(top_p None이면 payload에서 제외), throttling.
+| agent | id | 층 |
+|---|---|---|
+| `qwen32` | `qwen.qwen3-32b-v1:0` | dense 32B |
+| `gemma27` | `google.gemma-3-27b-it` | dense 27B (IT 확인함) |
+| `gptoss20` | `openai.gpt-oss-20b-1:0` | MoE, active ~3B |
+| `nemotron30` | `nvidia.nemotron-nano-3-30b` | MoE, 인라인 추론 |
+| judge | `us.anthropic.claude-sonnet-5` | INFERENCE_PROFILE |
+
+**dense와 MoE를 같은 층으로 평균내지 말 것.** 활성 파라미터가 10배 차이난다.
+
+#### 실제로 밟은 함정 (전부 스모크 테스트가 잡았다)
+
+1. **빈 system 블록 거부.** Converse가
+   `Invalid length for parameter system[0].text`로 거절한다. judge는 지시문이
+   전부 user 메시지라 system이 비어 있다 → 비면 키 자체를 빼야 한다.
+2. **Sonnet 5는 `temperature`를 거부한다**("deprecated for this model").
+   candidate는 temperature=0이 필요하므로 `judge.llm` 블록을 따로 뒀다.
+   결과적으로 judge는 모델 기본 샘플링으로 채점한다 — 판정이 0/1 이진이라 분산이
+   제한되지만 완전 결정적이지는 않다.
+3. **reasoning이 출력 예산을 다 먹는다.** Sonnet 5가 `reasoningContent` 블록에
+   441토큰을 쓰고 `text` 블록을 비운 채 `end_turn`으로 끝냈다. `max_tokens: 512`가
+   원인. judge는 2048로 올렸고, 이 경우 error를 `reasoning_only`로 구분한다 —
+   `empty_response`로 뭉뚱그리면 읽는 사람이 장애를 찾으러 간다.
+4. **Anthropic 모델은 `us.` 접두사 필수**(INFERENCE_PROFILE 전용). 빼면 "없는 모델"처럼 실패한다.
+5. runtime/mantle ID 상이, HTTP 200+에러본문, throttling.
+
+#### S9에서 확정한 것
+
+- **judge는 run 해시에서 뺀다.** judge는 답변을 한 글자도 바꾸지 않고 **채점 방식**만
+  바꾼다. run 해시에 넣으면 judge를 교체할 때마다 건드리지도 않은 trace의 좌표가
+  무효가 되고, 재실행하면 그 답변들을 다시 사야 한다.
+  → `Config.hash`(trace 좌표) / `Config.scoring_hash`(채점 좌표)로 분리.
+  `scoring.resolved.yaml`이 어떤 judge가 이 점수를 냈는지 기록하고,
+  다른 judge로 **이어서 채점하는 것은 거부한다**(절반은 A, 절반은 B로 채점된
+  파일에는 어느 쪽인지 말해주는 열이 없다).
+- **judge 호출 실패는 재시도 대상이다.** throttle·timeout·빈 응답은 인프라이고,
+  그대로 굳히면 일시적 장애가 분모에 영구 구멍으로 남는다.
+  단 `reasoning_only`는 예산 문제라 재시도하면 무한 루프이므로 최종으로 기록한다.
+  `format_fail`도 재시도하지 않는다 — 파싱될 때까지 돌리면 준수하는 출력만 남는다.
+- **재시도 행은 append되므로 읽을 때 키 기준으로 dedup한다**(나중 것 우선).
+  둘 다 세면 hit@k를 포함한 모든 평균이 그 행을 두 번 센다.
 
 ---
 
@@ -484,6 +547,15 @@ uv run kbeval run                           # 전체 스윕 (재개 가능, 그�
 uv run kbeval score                         # traces -> scores.jsonl (재개 가능)
 uv run kbeval report                        # realization / retrieval / abstention / tau
 uv run kbeval web                           # 읽기 전용 뷰어 (runs/에 쓰지 않음)
+
+# --- 실측 (S9) : .env 의 BEDROCK_API_KEY 사용 ---
+BED="-c configs/base.yaml -c configs/bedrock.yaml -c configs/judge.yaml"
+uv run kbeval ask qa_001 --agent qwen32 --mode rag --pack mid $BED   # 단발, 가장 쌈
+uv run kbeval run --limit 1 $BED            # 스펙당 1문항 스모크
+uv run kbeval run $BED                      # 20 spec × 7 문항 = 140 호출
+uv run kbeval score $BED                    # judge = us.anthropic.claude-sonnet-5
+uv run kbeval report $BED
+uv run kbeval web $BED                      # 실측 run을 웹에서
 
 uv run pytest -q
 uv run ruff check src tests

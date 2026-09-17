@@ -129,10 +129,14 @@ class PromptsCfg(Strict):
         return Path(getattr(self, which)).read_text(encoding="utf-8")
 
     def digest(self) -> str:
+        """The prompts the CANDIDATE sees. The judge prompt is not one of them."""
         h = hashlib.sha256()
-        for which in ("system_qa", "context", "chunk", "judge"):
+        for which in ("system_qa", "context", "chunk"):
             h.update(self.read(which).encode())
         return h.hexdigest()[:12]
+
+    def judge_digest(self) -> str:
+        return hashlib.sha256(self.read("judge").encode()).hexdigest()[:12]
 
 
 class LLMCfg(Strict):
@@ -141,8 +145,8 @@ class LLMCfg(Strict):
     temperature 0 is not about answer quality, it is about being able to
     attribute a difference to the pack rather than to sampling noise.
     """
-    temperature: float = 0.0
-    top_p: float | None = None      # None -> omitted from the payload entirely
+    temperature: float | None = 0.0   # None -> omitted; some models reject it outright
+    top_p: float | None = None        # None -> omitted from the payload entirely
     max_tokens: int = 512
     timeout_s: int = 60
     max_retries: int = 5
@@ -159,6 +163,16 @@ class JudgeCfg(Strict):
     agent: AgentSpec = Field(default_factory=lambda: AgentSpec(provider="mock_judge",
                                                                id="mock-judge"))
     abstain_marker: str = "답변 불가"
+    llm: LLMCfg | None = None
+    """Decoding settings for the judge alone.
+
+    The candidates want temperature 0 so a pack difference cannot be sampling
+    noise. Some frontier models reject `temperature` outright -- Claude
+    Sonnet 5 answers "temperature is deprecated for this model" -- so the judge
+    needs its own block rather than a shared one bent to fit both.
+
+    None means "use the global llm block".
+    """
 
 
 class ScoringCfg(Strict):
@@ -208,20 +222,44 @@ class Config(Strict):
         return self
 
     def canonical(self) -> str:
-        """Settings PLUS the prompt text they point at.
+        """Everything that shapes a TRACE, and nothing else.
 
-        Without the digest, editing prompts/system_qa.md would leave the hash
-        untouched and two different experiments would occupy one coordinate --
-        the failure this project exists to avoid.
+        Includes the candidate prompt text: without the digest, editing
+        prompts/system_qa.md would leave the hash untouched and two different
+        experiments would occupy one coordinate.
+
+        Excludes the judge and the scoring settings. They do not change a
+        single answer -- they change how answers are GRADED -- so folding them
+        in would mean swapping the judge invalidated the coordinate of traces
+        it never touched, and a rerun would have to buy those answers again.
+        Grading provenance lives in scoring_hash and in scoring.resolved.yaml.
         """
         payload = self.model_dump(mode="json") | {"_prompts_digest": self.prompts.digest()}
         payload["run"] = {"seed": self.run.seed}     # operational fields excluded
+        payload.pop("judge", None)
+        payload.pop("scoring", None)
+        # the judge prompt PATH belongs to grading too, not just its contents
+        payload.get("prompts", {}).pop("judge", None)
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"))
+
+    def scoring_canonical(self) -> str:
+        """The grading coordinate: which judge, how it decodes, what it reads,
+        and the thresholds the report applies."""
+        payload = {"judge": self.judge.model_dump(mode="json"),
+                   "scoring": self.scoring.model_dump(mode="json"),
+                   "judge_prompt": self.prompts.judge,
+                   "_judge_prompt_digest": self.prompts.judge_digest()}
         return json.dumps(payload, sort_keys=True, ensure_ascii=False,
                           separators=(",", ":"))
 
     @property
     def hash(self) -> str:
         return hashlib.sha256(self.canonical().encode()).hexdigest()[:12]
+
+    @property
+    def scoring_hash(self) -> str:
+        return hashlib.sha256(self.scoring_canonical().encode()).hexdigest()[:12]
 
     @property
     def run_id(self) -> str:

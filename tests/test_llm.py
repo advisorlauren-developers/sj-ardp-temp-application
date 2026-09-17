@@ -173,12 +173,41 @@ def test_a_200_with_an_empty_body_is_an_error_not_an_answer(monkeypatch):
     """The Bedrock trap: HTTP 200 carrying an error document. Scoring that as a
     wrong answer would read as 'this pack made the model worse'."""
     llm = BedrockLLM(AgentSpec(provider="bedrock", id="x"), LLMCfg())
-    monkeypatch.setattr(llm, "_converse", lambda s, u: ("", {"provider": "bedrock"}))
+    monkeypatch.setattr(llm, "_converse", lambda s, u: ("", {"provider": "bedrock"}, False))
     assert llm.generate("s", "u").error == "empty_response"
 
 
+def test_an_answer_that_was_all_reasoning_says_so(monkeypatch):
+    """Sonnet 5 returned 441 output tokens of reasoningContent and no text
+    block. "empty_response" sends the reader hunting for an outage;
+    "reasoning_only" names a budget with an obvious fix."""
+    llm = BedrockLLM(AgentSpec(provider="bedrock", id="x"), LLMCfg())
+    monkeypatch.setattr(llm, "_converse", lambda s, u: ("", {"provider": "bedrock"}, True))
+    r = llm.generate("s", "u")
+    assert r.error == "reasoning_only" and r.had_thinking is True
+
+
+def test_native_reasoning_blocks_are_dropped_not_parsed(monkeypatch):
+    """The clean case: the provider separates reasoning itself, so nothing has
+    to be cut out of the answer -- but it is still reported."""
+    class FakeClient:
+        def converse(self, **kw):
+            return {"output": {"message": {"content": [
+                {"reasoningContent": {"reasoningText": {"text": "속으로 고민"}}},
+                {"text": "실제 답변이다."}]}},
+                "stopReason": "end_turn"}
+
+    llm = BedrockLLM(AgentSpec(provider="bedrock", id="x"), LLMCfg())
+    llm._client = FakeClient()
+    r = llm.generate("", "u")
+    assert r.text == "실제 답변이다." and r.had_thinking is True
+    assert "속으로 고민" not in r.text
+
+
 def test_mantle_refuses_to_run_without_a_token(monkeypatch):
+    # both names: a CLI invocation elsewhere in the suite may have loaded .env
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("BEDROCK_API_KEY", raising=False)
     llm = BedrockLLM(AgentSpec(provider="bedrock", endpoint="mantle", id="x"),
                      LLMCfg(max_retries=1))
     assert "AWS_BEARER_TOKEN_BEDROCK" in llm.generate("s", "u").error
@@ -186,3 +215,38 @@ def test_mantle_refuses_to_run_without_a_token(monkeypatch):
 
 def test_both_providers_are_registered():
     assert {"mock", "bedrock"} <= set(LLMS.names())
+
+
+def test_an_empty_system_prompt_is_omitted_not_sent(monkeypatch):
+    """Converse rejects an empty system block outright, and the judge sends
+    none -- its whole instruction is the user message. Found by the S9 smoke
+    test, which is what a smoke test is for."""
+    seen = {}
+
+    class FakeClient:
+        def converse(self, **kw):
+            seen.update(kw)
+            return {"output": {"message": {"content": [{"text": "ok"}]}}}
+
+    llm = BedrockLLM(AgentSpec(provider="bedrock", id="x"), LLMCfg())
+    llm._client = FakeClient()
+
+    llm.generate("", "user text")
+    assert "system" not in seen
+
+    llm.generate("실제 지시문", "user text")
+    assert seen["system"] == [{"text": "실제 지시문"}]
+
+
+def test_a_whitespace_only_system_prompt_counts_as_empty(monkeypatch):
+    seen = {}
+
+    class FakeClient:
+        def converse(self, **kw):
+            seen.update(kw)
+            return {"output": {"message": {"content": [{"text": "ok"}]}}}
+
+    llm = BedrockLLM(AgentSpec(provider="bedrock", id="x"), LLMCfg())
+    llm._client = FakeClient()
+    llm.generate("   \n  ", "u")
+    assert "system" not in seen

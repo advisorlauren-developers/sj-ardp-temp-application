@@ -46,17 +46,24 @@ def strip_thinking(text: str) -> tuple[str, bool]:
     return clean.strip(), bool(n or n2)
 
 
-def validate(text: str, latency_ms: float, usage: dict[str, Any]) -> LLMResponse:
+def validate(text: str, latency_ms: float, usage: dict[str, Any],
+             reasoned: bool = False) -> LLMResponse:
     """The single funnel every provider returns through.
 
     An empty body after stripping is a failure, not an abstention: abstention
     is a deliberate `답변 불가`, and conflating the two would let an infra
     problem read as a model correctly declining to answer.
+
+    `reasoned` is for providers that separate reasoning natively (Bedrock
+    returns it as its own content block). When that is ALL that came back, the
+    error says so: "reasoning_only" is a budget problem with an obvious fix,
+    while "empty_response" sends the reader looking for an outage.
     """
     clean, had = strip_thinking(text or "")
+    had = had or reasoned
     if not clean:
-        return LLMResponse(text="", usage=usage, latency_ms=latency_ms,
-                           had_thinking=had, error="empty_response")
+        return LLMResponse(text="", usage=usage, latency_ms=latency_ms, had_thinking=had,
+                           error="reasoning_only" if reasoned else "empty_response")
     return LLMResponse(text=clean, usage=usage, latency_ms=latency_ms, had_thinking=had)
 
 

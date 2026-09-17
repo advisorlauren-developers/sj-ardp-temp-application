@@ -138,6 +138,11 @@ def build_report(cfg: Config, root: Path) -> Report:
                 realization = round(lift / headroom, 4)
                 if realization < 0:
                     note = "negative: context made it worse (kept on purpose)"
+                elif realization > 1:
+                    # The pack beat the curated reference. Usually the reference
+                    # is one paragraph while retrieval hands over the whole
+                    # section -- a real result about the ceiling, not an error.
+                    note = "above 1: rag beat oracle_ref — check the reference is complete"
 
             rep.realization.append(RealizationRow(
                 agent=agent, pack=pack, bare=b, rag=r, oracle=o,
@@ -180,6 +185,21 @@ def build_report(cfg: Config, root: Path) -> Report:
                     "abstention": _mean([v.get("abstention") for v in verdicts]),
                     "harmful_action": _mean([v.get("harmful_action") for v in verdicts]),
                 })
+
+    # --- did the axis move at all? ---------------------------------------
+    per_agent = {}
+    for row in rep.realization:
+        per_agent.setdefault(row.agent, set()).add(row.rag)
+    if per_agent and all(len(v) == 1 for v in per_agent.values()) and len(cfg.sweep.pack) > 1:
+        rep.notes.append(
+            "every pack scored identically for every model — the pack axis did not "
+            "discriminate. Read this as a property of the QUESTION SET, not of the "
+            "packs: if the answers are reachable and easy for all of them, there is "
+            "no headroom for preprocessing to win.")
+    if any(r.rag == 1.0 and r.oracle == 1.0 for r in rep.realization):
+        rep.notes.append(
+            "at least one arm scored a perfect 1.000 — the set is saturated there and "
+            "a better pack has nothing left to prove.")
 
     # --- cross-model agreement -------------------------------------------
     rep.tau = _kendall(rep, cfg)
@@ -245,10 +265,11 @@ def render(rep: Report) -> str:
         out.append(f"note   : {n}")
 
     out.append("\n## realization  (answerable only; lift / headroom)")
-    out.append(f"{'agent':<9}{'pack':<7}{'bare':>7}{'rag':>7}{'oracle':>8}"
+    w = max([len(r.agent) for r in rep.realization] + [5]) + 2
+    out.append(f"{'agent':<{w}}{'pack':<7}{'bare':>7}{'rag':>7}{'oracle':>8}"
                f"{'headroom':>10}{'lift':>7}{'realiz':>8}{'n':>4}  note")
     for r in rep.realization:
-        out.append(f"{r.agent:<9}{r.pack:<7}{_fmt(r.bare)}{_fmt(r.rag)}{_fmt(r.oracle, 8)}"
+        out.append(f"{r.agent:<{w}}{r.pack:<7}{_fmt(r.bare)}{_fmt(r.rag)}{_fmt(r.oracle, 8)}"
                    f"{_fmt(r.headroom, 10)}{_fmt(r.lift)}{_fmt(r.realization, 8)}"
                    f"{r.n:>4}  {r.note}")
 
@@ -270,7 +291,8 @@ def render(rep: Report) -> str:
                    f"{_fmt(a['abstention'], 9)}{_fmt(a['harmful_action'], 9)}")
 
     out.append("\n## kendall tau  (do the models rank the packs the same way?)")
+    tw = max([len(t["pair"]) for t in rep.tau] + [10]) + 2
     for t in rep.tau:
-        out.append(f"{t['pair']:<22}tau={_fmt(t.get('tau'))}  {t.get('note', '')}")
+        out.append(f"{t['pair']:<{tw}}tau={_fmt(t.get('tau'))}  {t.get('note', '')}")
 
     return "\n".join(out)

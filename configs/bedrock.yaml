@@ -1,0 +1,25 @@
+# S9 스텝 1~2: 실모델 후보 4종. judge는 아직 mock이다 (claude.md 순서).
+#
+# 모델 ID는 `aws bedrock list-foundation-models --region us-west-2`로 확인했다.
+# runtime(Converse) 엔드포인트 기준이며, mantle은 ID가 다를 수 있다.
+#
+# dense와 MoE를 같은 층으로 평균내지 말 것 — 활성 파라미터가 10배 차이난다.
+
+agents:
+  qwen32:      {provider: bedrock, endpoint: runtime, id: "qwen.qwen3-32b-v1:0",
+                family: dense, params_b: 32}
+  gemma27:     {provider: bedrock, endpoint: runtime, id: "google.gemma-3-27b-it",
+                family: dense, params_b: 27}
+  gptoss20:    {provider: bedrock, endpoint: runtime, id: "openai.gpt-oss-20b-1:0",
+                family: moe, params_b: 20, notes: "active ~3B"}
+  nemotron30:  {provider: bedrock, endpoint: runtime, id: "nvidia.nemotron-nano-3-30b",
+                family: moe, params_b: 30, thinking: true,
+                notes: "인라인 추론 — 분리 불가, 별도 층으로 보고"}
+
+sweep:
+  agent: [qwen32, gemma27, gptoss20, nemotron30]
+
+llm:
+  region: us-west-2
+  max_tokens: 512
+  temperature: 0.0
