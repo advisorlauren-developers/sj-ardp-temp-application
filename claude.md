@@ -201,10 +201,10 @@ mock_a  raw   bare=0.000 rag=0.200 oracle=1.000 headroom=1.000 realiz=0.200
 
 $ kbeval web            # http://127.0.0.1:8000  (읽기 전용)
 $ kbeval web --port 8010    # 8000이 쓰이는 중이면 빈 포트를 알려주고 exit 1
-  /  랜딩 → /qa  질문·답변·근거·baseline → /report  실현율
+  /  랜딩 → /qa  채팅(근거·baseline 펼치기) → /report  실현율
 
 $ pytest -q
-362 passed
+366 passed
 ```
 
 ### 알려진 한계 — S9 실측 전에 데이터를 키울 것
@@ -365,7 +365,8 @@ temperature/top_p 동시 지정 거부(top_p None이면 payload에서 제외), t
 | 라우트 | 내용 |
 |---|---|
 | `/` | 랜딩. 의도 3종(Q&A · 버그 · 기능추가) 카드 |
-| `/qa` | **질문 → 답변 → 근거 문단 → baseline 비교.** 기록하지 않음 |
+| `/qa` | **채팅.** 질문 → 답변 → 근거 문단 → baseline. 기록하지 않음 |
+| `/api/ask` | 채팅의 유일한 백엔드 호출. JSON 반환, 쓰기 없음 |
 | `/bug`, `/feature` | 준비 중 (해당 intent 문항이 아직 없음) |
 | `/report` | realization + health + 기권/유해 + kendall τ |
 | `/retrieval` | pack별 hit@k · gold_injected · **공변량** |
@@ -379,6 +380,19 @@ temperature/top_p 동시 지정 거부(top_p None이면 payload에서 제외), t
 
 라벨된 문항 없이 답변만 보여주는 화면은 만들지 않는다. 좋은지 나쁜지 판단할 근거가
 없으면 그건 측정이 아니라 인상이다.
+
+#### `/qa`는 채팅이지만 **단일 턴**이다
+
+대화 이력을 프롬프트에 넣지 않는다. 넣으면 화면에 보이는 동작이 harness가 실제로
+측정하는 동작과 달라진다 — 통제는 "질문 하나 + 통제된 컨텍스트 하나"이고,
+조용히 다른 일을 하는 화면은 없는 화면보다 나쁘다. 이 사실을 배너에 적는다.
+`/api/ask`에는 이력을 받을 자리 자체가 없고, 테스트가 그걸 고정한다
+(같은 질문을 두 번 하면 사이에 무슨 질문이 끼든 응답이 동일해야 한다).
+
+대화 이력은 브라우저 `sessionStorage`에만 산다. 서버는 상태를 갖지 않는다.
+
+답변은 **JSON으로 오고 `textContent`로 렌더링한다.** `innerHTML`을 쓰지 않는다 —
+코퍼스 내용이 엘리먼트가 될 수 있는 경로를 아예 만들지 않는다.
 
 #### `/qa`가 반드시 같이 보여주는 것
 

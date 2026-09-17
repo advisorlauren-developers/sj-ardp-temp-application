@@ -151,7 +151,34 @@ a.chip:hover{border-color:var(--accent);color:var(--accent);text-decoration:none
 .base{background:var(--bg);border:1px solid var(--line);border-radius:12px;
   padding:16px 18px;margin-top:10px}
 .base .text{font-size:14px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+.chat{display:flex;flex-direction:column;gap:18px;margin-top:20px;min-height:46vh}
+.turn{display:flex;flex-direction:column;gap:8px}
+.turn.me{align-items:flex-end}
+.bubble{max-width:min(78%,640px);padding:13px 17px;border-radius:20px;
+  font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.turn.me .bubble{background:var(--accent);color:#fff;border-bottom-right-radius:6px}
+.turn.bot .bubble{background:var(--surface);border:1px solid var(--line);
+  border-bottom-left-radius:6px}
+.turn.bot .bubble.err{color:var(--warn)}
+.meta{font-size:11px;color:var(--muted);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.turn.bot details{max-width:min(78%,640px);font-size:12px}
+.turn.bot summary{cursor:pointer;color:var(--muted);padding:5px 2px;list-style:none}
+.turn.bot summary::-webkit-details-marker{display:none}
+.turn.bot summary::before{content:"▸ ";color:var(--muted)}
+.turn.bot details[open] summary::before{content:"▾ "}
+.turn.bot summary:hover{color:var(--accent)}
+.drawer{border:1px solid var(--line);border-radius:12px;background:var(--surface);
+  padding:4px 14px 12px;margin-top:4px}
+.composer{position:sticky;bottom:0;background:linear-gradient(to bottom,
+  rgba(251,251,253,0) 0%,var(--bg) 26%);padding:20px 0 8px;margin-top:8px}
+.composer form{margin:0;align-items:center}
+.thinking{color:var(--muted);font-size:13px;padding:6px 2px}
+.empty-chat{text-align:center;color:var(--muted);padding:34px 0 10px;font-size:13px}
+.ghost{background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+.ghost:hover{border-color:var(--accent);opacity:1}
 @media (max-width:760px){.grid,.cards{grid-template-columns:1fr}
+  .bubble,.turn.bot details{max-width:88%}
   main{padding:28px 18px 64px}h1{font-size:26px}.hero h1{font-size:30px}
   .bar{gap:16px;flex-wrap:wrap}}
 """
@@ -492,88 +519,206 @@ def not_yet(run: str | None = None) -> HTMLResponse:
     return page("준비 중", "home", body, pick_run(c, run), list_runs(c))
 
 
+def answer_payload(c: Config, question: str, pack: str) -> dict[str, Any]:
+    """One question, answered exactly the way the sweep answers it.
+
+    Single turn, no conversation history. Carrying the thread into the prompt
+    would make the demo show behaviour the harness never measures -- the
+    control is one question against one controlled context, and a screen that
+    quietly does something else is worse than no screen.
+    """
+    from .types import Question
+    probe = Question(qid="qa-live", intent="qa", query=question, answerable=True)
+    agent = c.sweep.agent[0]
+
+    rag_agent = build_agent_for(c, agent, "rag", pack)
+    rag = rag_agent.answer(probe)
+    base = build_agent_for(c, agent, "bare", None).answer(probe)
+    pk = rag_agent.deps.pack
+    hits = {h.chunk_id: h for h in rag.retrieved}
+
+    sources = []
+    for cid in rag.injected_chunk_ids:
+        ch = pk.get(cid) if pk.has(cid) else None
+        text = ch.text if ch else ""
+        if text.startswith("["):            # inline_meta header sits on its own line
+            text = text.split("\n", 1)[-1]
+        sources.append({
+            "chunk_id": cid,
+            "heading": (ch.meta.get("heading_path") or ch.meta.get("title") or "") if ch else "",
+            "score": round(hits[cid].score, 2) if cid in hits else None,
+            "rank": hits[cid].rank if cid in hits else None,
+            "text": text.strip(),
+        })
+
+    return {
+        "answer": rag.text, "error": rag.error,
+        "baseline": base.text, "baseline_error": base.error,
+        "agent": agent, "provider": c.agents[agent].provider,
+        "pack": pack, "pack_label": pack_label(c, pack),
+        "injected_tokens": rag.injected_tokens,
+        "budget": c.fixed.context_token_budget,
+        "candidates": len(rag.retrieved),
+        "skipped": len(rag.skipped_chunk_ids),
+        "sources": sources,
+    }
+
+
+@app.get("/api/ask")
+def api_ask(q: str, pack: str = "") -> dict[str, Any]:
+    """The chat's only backend call. Reads packs, writes nothing."""
+    c = cfg()
+    pack = pack if pack in c.packs else next(iter(c.sweep.pack))
+    if not q.strip():
+        return {"answer": "", "error": "empty_question", "sources": []}
+    return answer_payload(c, q.strip(), pack)
+
+
+CHAT_JS = """
+const KEY = 'kbeval.thread';
+const thread = document.getElementById('thread');
+const form = document.getElementById('composer');
+const input = document.getElementById('q');
+const packSel = document.getElementById('pack');
+const empty = document.getElementById('empty');
+let turns = [];
+
+function store() {
+  try { sessionStorage.setItem(KEY, JSON.stringify(turns)); } catch (_) {}
+}
+function restore() {
+  try { turns = JSON.parse(sessionStorage.getItem(KEY) || '[]'); } catch (_) { turns = []; }
+  turns.forEach(t => render(t.q, t.a));
+  if (turns.length) empty.hidden = true;
+}
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;   // never innerHTML: answers are data
+  return n;
+}
+function drawer(summaryText, build) {
+  const d = el('details');
+  d.appendChild(el('summary', null, summaryText));
+  const box = el('div', 'drawer');
+  build(box);
+  d.appendChild(box);
+  return d;
+}
+function render(question, a) {
+  const me = el('div', 'turn me');
+  me.appendChild(el('div', 'bubble', question));
+  thread.appendChild(me);
+
+  const bot = el('div', 'turn bot');
+  const body = a.error ? ('오류 · ' + a.error) : a.answer;
+  bot.appendChild(el('div', 'bubble' + (a.error ? ' err' : ''), body));
+  bot.appendChild(el('div', 'meta',
+    `${a.agent} (${a.provider}) · ${a.pack_label} · 주입 ${a.sources.length}청크 `
+    + `${a.injected_tokens}/${a.budget} tok`
+    + (a.skipped ? ` · 예산 초과 ${a.skipped}건 제외` : '')
+    + ` · 검색 후보 ${a.candidates}건`));
+
+  if (a.sources.length) {
+    bot.appendChild(drawer(`근거로 쓰인 문단 ${a.sources.length}개`, box => {
+      a.sources.forEach((s, i) => {
+        const h = el('div', 'head');
+        h.appendChild(el('span', null, String(i + 1)));
+        h.appendChild(el('b', null, s.heading || s.chunk_id));
+        h.appendChild(el('span', null, s.chunk_id));
+        if (s.score !== null) h.appendChild(el('span', null, 'score ' + s.score));
+        const card = el('div', 'src');
+        card.appendChild(h);
+        card.appendChild(el('div', 'body', s.text));
+        box.appendChild(card);
+      });
+    }));
+  } else {
+    bot.appendChild(el('div', 'meta', '검색된 문단이 없습니다 — 질문의 어휘가 코퍼스와 겹치지 않습니다.'));
+  }
+
+  bot.appendChild(drawer('지식 주입 없이 같은 질문을 하면', box => {
+    box.appendChild(el('div', 'base',
+      a.baseline_error ? ('오류 · ' + a.baseline_error) : a.baseline));
+    box.appendChild(el('div', 'meta',
+      '같은 모델, 같은 프롬프트, 자료만 뺀 baseline입니다. 이 차이가 측정 대상입니다.'));
+  }));
+  thread.appendChild(bot);
+}
+async function ask(question) {
+  empty.hidden = true;
+  const me = el('div', 'turn me');
+  me.appendChild(el('div', 'bubble', question));
+  thread.appendChild(me);
+  const wait = el('div', 'thinking', '문서를 검색하는 중…');
+  thread.appendChild(wait);
+  window.scrollTo(0, document.body.scrollHeight);
+
+  try {
+    const r = await fetch('/api/ask?q=' + encodeURIComponent(question)
+                          + '&pack=' + encodeURIComponent(packSel.value));
+    const a = await r.json();
+    wait.remove();
+    me.remove();
+    render(question, a);
+    turns.push({ q: question, a: a });
+    store();
+  } catch (err) {
+    wait.textContent = '요청이 실패했습니다 · ' + err;
+  }
+  window.scrollTo(0, document.body.scrollHeight);
+}
+form.addEventListener('submit', ev => {
+  ev.preventDefault();
+  const v = input.value.trim();
+  if (!v) return;
+  input.value = '';
+  ask(v);
+});
+document.querySelectorAll('[data-sample]').forEach(b =>
+  b.addEventListener('click', ev => { ev.preventDefault(); ask(b.dataset.sample); }));
+document.getElementById('clear').addEventListener('click', () => {
+  turns = []; store(); thread.replaceChildren(); empty.hidden = false;
+});
+restore();
+"""
+
+
 @app.get("/qa", response_class=HTMLResponse)
-def qa(q: str = "", pack: str = "", run: str | None = None) -> HTMLResponse:
+def qa(pack: str = "", run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
     pack = pack if pack in c.packs else next(iter(c.sweep.pack))
-    agent = c.sweep.agent[0]
 
     opts = "".join(
         f'<option value="{e(p)}"{" selected" if p == pack else ""}>{e(pack_label(c, p))}</option>'
         for p in c.sweep.pack)
     samples = "".join(
-        f'<a class="chip" href="/qa?q={html.escape(x.query, quote=True)}&pack={e(pack)}">'
-        f'{e(x.query[:34])}…</a>'
-        for x in load_questions(c.eval.questions, c.eval.intents)[:4])
-
-    ask = f"""<div class="ask"><form method="get">
-<input type="text" name="q" value="{e(q)}" autofocus
-       placeholder="예: OLT에서 E411 인증 실패가 뜨는데 어떻게 조치하나요?">
-<select name="pack">{opts}</select>
-<button type="submit">질문</button></form>
-<div class="chips">{samples}</div></div>"""
-
-    answer_html = ""
-    if q.strip():
-        from .types import Question
-        probe = Question(qid="qa-live", intent="qa", query=q.strip(), answerable=True)
-
-        rag_agent = build_agent_for(c, agent, "rag", pack)
-        rag = rag_agent.answer(probe)
-        base = build_agent_for(c, agent, "bare", None).answer(probe)
-
-        pk = rag_agent.deps.pack
-        score_of = {h.chunk_id: h for h in rag.retrieved}
-        sources = ""
-        for i, cid in enumerate(rag.injected_chunk_ids, start=1):
-            hit = score_of.get(cid)
-            ch = pk.get(cid) if pk.has(cid) else None
-            head = (ch.meta.get("heading_path") or ch.meta.get("title") or "") if ch else ""
-            text = ch.text if ch else ""
-            if text.startswith("["):                     # inline_meta header line
-                text = text.split("\n", 1)[-1]
-            sources += (f'<div class="src"><div class="head">'
-                        f'<span>{i}</span><b>{e(head)}</b>'
-                        f'<span>{e(cid)}</span>'
-                        f'<span>score {hit.score:.2f}</span>' if hit else
-                        f'<div class="src"><div class="head"><span>{i}</span>'
-                        f'<b>{e(head)}</b><span>{e(cid)}</span>')
-            sources += f'</div><div class="body">{e(text.strip())}</div></div>'
-
-        if not rag.injected_chunk_ids:
-            sources = ('<div class="base"><div class="text">'
-                       '검색된 문단이 없습니다 — 질문의 어휘가 코퍼스와 겹치지 않습니다.'
-                       '</div></div>')
-
-        rag_text = (f"<span class='neg'>error · {e(rag.error)}</span>" if rag.error
-                    else e(rag.text))
-        base_text = (f"<span class='neg'>error · {e(base.error)}</span>" if base.error
-                     else e(base.text))
-        skipped = (f" · 예산 초과로 건너뜀 {len(rag.skipped_chunk_ids)}건"
-                   if rag.skipped_chunk_ids else "")
-
-        answer_html = f"""<div class="reply">
-<div class="lead">답변 · 문서 근거</div>
-<div class="text">{rag_text}</div>
-<div class="foot">{e(agent)} ({e(c.agents[agent].provider)}) ·
- {e(pack_label(c, pack))} · 주입 {len(rag.injected_chunk_ids)}청크
- {rag.injected_tokens}/{c.fixed.context_token_budget} tok{e(skipped)} ·
- 검색 후보 {len(rag.retrieved)}건</div></div>
-
-<h2>근거로 쓰인 문단</h2>
-<p class="sub">BM25가 실제로 검색해서 프롬프트에 넣은 것들입니다. 여기 없으면 모델도 못 봤습니다.</p>
-{sources}
-
-<h2>지식 주입 없이 물으면</h2>
-<p class="sub">같은 모델, 같은 프롬프트, 자료만 뺀 baseline입니다. 이 차이가 측정 대상입니다.</p>
-<div class="base"><div class="text">{base_text}</div></div>"""
+        f'<button type="button" class="chip" data-sample="{html.escape(x.query, quote=True)}">'
+        f'{e(x.query[:30])}…</button>'
+        for x in load_questions(c.eval.questions, c.eval.intents)[:3])
 
     body = f"""<h1>기술지원 Q&amp;A</h1>
-<p class="sub">사내 문서(OLT·BNG 가이드)를 근거로 답합니다. 근거 문단을 함께 보여줍니다.</p>
+<p class="sub">사내 문서(OLT·BNG 가이드)를 근거로 답합니다. 근거 문단과 baseline을 함께 펼쳐 볼 수 있습니다.</p>
 {mock_banner(c)}
 <div class="banner"><b>측정이 아닙니다.</b> 여기서 던진 질문은 <code>runs/</code>에
 기록되지 않고 run id도 만들지 않습니다. 라벨된 gold가 없어 채점도 없습니다 —
-점수가 필요하면 <code>kbeval run</code> 경로 하나뿐입니다.</div>
-{ask}{answer_html}"""
+점수가 필요하면 <code>kbeval run</code> 경로 하나뿐입니다.<br>
+<b>각 질문은 독립적으로 답합니다.</b> 앞의 대화를 컨텍스트로 넣지 않습니다.
+그래야 화면에 보이는 동작이 실제로 측정하는 동작과 같습니다.</div>
+
+<noscript><div class="banner">이 화면은 자바스크립트가 필요합니다.
+같은 일을 터미널에서 하려면 <code>kbeval ask qa_001 --mode rag --pack mid</code>.</div></noscript>
+
+<div class="chat" id="thread"></div>
+<div class="empty-chat" id="empty">질문을 입력해 보세요.<div class="chips"
+  style="justify-content:center">{samples}</div></div>
+
+<div class="composer"><form id="composer" autocomplete="off">
+<input type="text" id="q" placeholder="예: OLT에서 E411 인증 실패가 뜨는데 어떻게 조치하나요?" autofocus>
+<select id="pack">{opts}</select>
+<button type="submit">전송</button>
+<button type="button" class="ghost" id="clear">초기화</button>
+</form></div>
+<script>{CHAT_JS}</script>"""
     return page("Q&A", "qa", body, rid, list_runs(c))

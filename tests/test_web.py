@@ -56,49 +56,70 @@ def test_browsing_never_writes_under_runs(site):
     before = snapshot(runs)
     for path in ROUTES:
         client.get(path)
-    client.get("/qa", params={"q": "E-411 인증 실패 원인은?", "pack": "mid"})
+    client.get("/api/ask", params={"q": "E-411 인증 실패 원인은?", "pack": "mid"})
     assert snapshot(runs) == before
 
 
 def test_asking_mints_no_run(site):
     client, runs, _ = site
     before = {p.name for p in runs.iterdir()}
-    client.get("/qa", params={"q": "광 수신 레벨이 얼마 이하면 문제인가요?", "pack": "full"})
+    client.get("/api/ask", params={"q": "광 수신 레벨이 얼마 이하면 문제인가요?", "pack": "full"})
     assert {p.name for p in runs.iterdir()} == before
 
 
-def test_qa_shows_the_passages_it_actually_retrieved(site):
+def ask(client, q: str, pack: str = "mid") -> dict:
+    return client.get("/api/ask", params={"q": q, "pack": pack}).json()
+
+
+def test_the_answer_carries_the_passages_it_actually_retrieved(site):
     """The sources ARE the evidence that retrieval happened. An answer with no
     visible provenance is indistinguishable from the model making it up."""
     client, _, _ = site
-    body = client.get("/qa", params={"q": "E-411 인증 실패 조치 방법", "pack": "mid"}).text
-    assert "근거로 쓰인 문단" in body
-    assert "olt_auth.md#" in body and "score" in body
-    assert "show ont autofind" in body          # the retrieved text itself, not just an id
+    a = ask(client, "E-411 인증 실패 조치 방법")
+    assert a["sources"]
+    assert all({"chunk_id", "heading", "score", "rank", "text"} <= set(s) for s in a["sources"])
+    assert any("show ont autofind" in s["text"] for s in a["sources"])
 
 
-def test_qa_shows_the_baseline_beside_the_answer(site):
+def test_the_answer_carries_its_own_baseline(site):
     """The whole point of the tool: the same model, the same prompt, material
     removed. Without it an answer is just an answer."""
     client, _, _ = site
-    body = client.get("/qa", params={"q": "E-411 인증 실패 조치 방법", "pack": "mid"}).text
-    assert "지식 주입 없이 물으면" in body
-    assert "답변 불가" in body                   # bare has nothing to answer from
+    a = ask(client, "E-411 인증 실패 조치 방법")
+    assert a["baseline"] == "답변 불가"          # bare has nothing to answer from
+    assert a["answer"] != a["baseline"]
 
 
-def test_only_injected_passages_are_shown_as_sources(site):
+def test_only_injected_passages_are_offered_as_sources(site):
     """A chunk that lost to the token budget was never seen by the model, so
     listing it as a source would be a lie about provenance."""
     client, _, cfg_ = site
-    body = client.get("/qa", params={"q": "E-411 인증 실패 조치 방법", "pack": "mid",
-                                     }).text
-    shown = set(re.findall(r"olt_auth\.md#\d+|bng_qos\.md#\d+", body))
+    a = ask(client, "E-411 인증 실패 조치 방법")
 
     from kbeval.types import Question
     from kbeval.wiring import build
     res = build(cfg_, cfg_.sweep.agent[0], "rag", "mid").answer(
         Question(qid="x", intent="qa", query="E-411 인증 실패 조치 방법", answerable=True))
-    assert shown == set(res.injected_chunk_ids)
+    assert [s["chunk_id"] for s in a["sources"]] == res.injected_chunk_ids
+
+
+def test_every_answer_names_the_dataset_level_and_the_budget(site):
+    """Which pack answered is the independent variable, and whether the budget
+    bound is the other half. Hiding either makes the demo unfalsifiable."""
+    client, _, _ = site
+    a = ask(client, "E-411 조치", pack="full")
+    assert a["pack"] == "full" and "full" in a["pack_label"]
+    assert a["injected_tokens"] <= a["budget"]
+    assert a["candidates"] >= len(a["sources"])
+
+
+def test_the_chat_is_single_turn(site):
+    """Carrying the thread into the prompt would make the demo show behaviour
+    the harness never measures. The endpoint has nowhere to put history."""
+    client, _, _ = site
+    first = ask(client, "E-411 원인은?")
+    ask(client, "그럼 재부팅은요?")
+    assert ask(client, "E-411 원인은?") == first      # no state accumulated anywhere
 
 
 def test_qa_says_it_is_not_a_measurement(site):
@@ -108,14 +129,18 @@ def test_qa_says_it_is_not_a_measurement(site):
     body = client.get("/qa").text
     assert "측정이 아닙니다" in body
     assert "runs/" in body and "기록되지 않" in body
+    assert "각 질문은 독립적으로" in body
 
 
-def test_qa_names_the_dataset_level_it_used(site):
-    """Which pack answered is the independent variable. Hiding it would make
-    the demo unfalsifiable."""
+def test_qa_works_without_javascript_or_says_what_to_run(site):
     client, _, _ = site
-    body = client.get("/qa", params={"q": "E-411 조치", "pack": "full"}).text
-    assert "full" in body and "tok" in body
+    body = client.get("/qa").text
+    assert "<noscript>" in body and "kbeval ask" in body
+
+
+def test_an_empty_question_is_refused_rather_than_answered(site):
+    client, _, _ = site
+    assert ask(client, "   ")["error"] == "empty_question"
 
 
 # --- the landing page -----------------------------------------------------
@@ -212,12 +237,21 @@ def test_an_unscored_run_still_renders(base_yaml, tmp_path, monkeypatch):
     assert r.status_code == 200 and "kbeval score" in r.text
 
 
-def test_user_text_is_escaped(site):
-    """The question box is the one field a reader controls."""
+def test_the_page_never_reflects_a_query_parameter(site):
+    """The chat renders answers through textContent, and the shell echoes
+    nothing back -- so there is no place for markup to land."""
     client, _, _ = site
-    r = client.get("/qa", params={"q": "<script>alert(1)</script>"})
-    assert "<script>alert(1)</script>" not in r.text
-    assert "&lt;script&gt;" in r.text
+    r = client.get("/qa", params={"q": "<script>alert(1)</script>", "pack": "mid"})
+    assert "alert(1)" not in r.text
+
+
+def test_answers_come_back_as_data_not_markup(site):
+    """JSON, rendered with textContent. Nothing the corpus contains can become
+    an element."""
+    client, _, _ = site
+    a = ask(client, "<img src=x onerror=alert(1)>")
+    assert isinstance(a["answer"], str)
+    assert "alert" not in client.get("/qa").text
 
 
 def test_an_unknown_run_id_falls_back_instead_of_failing(site):
@@ -227,4 +261,4 @@ def test_an_unknown_run_id_falls_back_instead_of_failing(site):
 
 def test_an_unknown_pack_falls_back(site):
     client, _, _ = site
-    assert client.get("/qa", params={"q": "테스트", "pack": "ghost"}).status_code == 200
+    assert client.get("/api/ask", params={"q": "테스트", "pack": "ghost"}).status_code == 200
