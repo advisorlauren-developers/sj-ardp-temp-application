@@ -29,7 +29,7 @@ def reset_cache() -> None:
     _PACKS.clear()
 
 
-def _pack_cached(cfg: Config, name: str) -> Pack:
+def pack_for(cfg: Config, name: str) -> Pack:
     """Packs are deterministic for a given config and a sweep asks for the same
     one N times. Keyed by config hash, so a changed control variable can never
     be served a stale pack."""
@@ -54,7 +54,7 @@ def build(cfg: Config, agent: str, mode: str, pack: str | None) -> ContextAgent:
     if pack is None:
         raise ValueError(f"mode '{mode}' needs a pack")
 
-    pk = _pack_cached(cfg, pack)
+    pk = pack_for(cfg, pack)
     retriever = build_retriever(cfg.retrieval)
     retriever.index(pk.chunks)
     deps = AgentDeps(llm=build_llm(cfg.agents[agent], cfg.llm),

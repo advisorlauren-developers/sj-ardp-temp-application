@@ -43,6 +43,7 @@ from .eval.report import Report
 from .packs import load_questions
 from .runner import RunPaths, read_traces
 from .wiring import build as build_agent_for
+from .wiring import pack_for
 
 app = FastAPI(title="kbeval", docs_url=None, redoc_url=None)
 
@@ -471,9 +472,29 @@ INTENTS = [
 
 
 def pack_label(c: Config, name: str) -> str:
+    """Name the transforms, not their count.
+
+    "변환 2개" vs "변환 4개" tells a reader that something differs but not what,
+    which is the one thing the pack axis is supposed to make legible.
+    """
     pc = c.packs[name]
-    n = len(pc.transforms)
-    return f"{name} · {pc.chunker}, 변환 {n}개" if n else f"{name} · {pc.chunker}, 변환 없음"
+    steps = ", ".join(pc.transforms) if pc.transforms else "변환 없음"
+    return f"{name} · {pc.chunker} · {steps}"
+
+
+def identical_packs(c: Config) -> list[list[str]]:
+    """Packs whose chunks came out byte-identical.
+
+    Worth saying out loud: if two levels produce the same corpus, switching
+    between them changes nothing, and a reader who sees the same answer twice
+    will read it as a broken selector or as a null result. It is neither -- it
+    means those transforms had nothing to do on THIS corpus.
+    """
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for name in c.sweep.pack:
+        sig = tuple(ch.text for ch in pack_for(c, name).chunks)
+        groups.setdefault(sig, []).append(name)
+    return [g for g in groups.values() if len(g) > 1]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -698,9 +719,19 @@ def qa(pack: str = "", run: str | None = None) -> HTMLResponse:
         f'{e(x.query[:30])}…</button>'
         for x in load_questions(c.eval.questions, c.eval.intents)[:3])
 
+    twins = identical_packs(c)
+    twin_note = ""
+    if twins:
+        pairs = " / ".join(" = ".join(g) for g in twins)
+        twin_note = (f'<div class="banner"><b>{e(pairs)}</b> 는 현재 코퍼스에서 '
+                     f'청크가 완전히 동일합니다. 선택을 바꿔도 답이 같은 것은 고장이 아니라, '
+                     f'그 전처리 단계가 이 문서들에 대해 <b>할 일이 없다</b>는 뜻입니다 — '
+                     f'중복이 없어 <code>dedup</code>이, 표기가 이미 일관돼 '
+                     f'<code>normalize_terms</code>가 바꿀 것을 찾지 못합니다.</div>')
+
     body = f"""<h1>기술지원 Q&amp;A</h1>
 <p class="sub">사내 문서(OLT·BNG 가이드)를 근거로 답합니다. 근거 문단과 baseline을 함께 펼쳐 볼 수 있습니다.</p>
-{mock_banner(c)}
+{mock_banner(c)}{twin_note}
 <div class="banner"><b>측정이 아닙니다.</b> 여기서 던진 질문은 <code>runs/</code>에
 기록되지 않고 run id도 만들지 않습니다. 라벨된 gold가 없어 채점도 없습니다 —
 점수가 필요하면 <code>kbeval run</code> 경로 하나뿐입니다.<br>

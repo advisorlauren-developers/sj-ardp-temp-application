@@ -262,3 +262,31 @@ def test_an_unknown_run_id_falls_back_instead_of_failing(site):
 def test_an_unknown_pack_falls_back(site):
     client, _, _ = site
     assert client.get("/api/ask", params={"q": "테스트", "pack": "ghost"}).status_code == 200
+
+
+def test_the_pack_selector_names_the_transforms(site):
+    """"변환 2개" vs "변환 4개" says something differs but not what -- which is
+    the one thing the pack axis exists to make legible."""
+    client, _, cfg_ = site
+    from kbeval.web import pack_label
+    body = client.get("/qa").text
+    assert "strip_boilerplate" in body and "normalize_terms" in body
+    assert pack_label(cfg_, "raw").endswith("변환 없음")
+
+
+def test_packs_that_came_out_identical_are_called_out(site):
+    """If two levels produce the same corpus, a reader who switches and sees
+    the same answer reads it as a broken selector. It is neither that nor a
+    null result -- those transforms had nothing to do on this corpus."""
+    client, _, cfg_ = site
+    from kbeval.web import identical_packs
+    assert identical_packs(cfg_) == [["mid", "full"]]
+    assert "청크가 완전히 동일합니다" in client.get("/qa").text
+
+
+def test_no_such_note_when_the_packs_really_differ(site, base_yaml, tmp_path, monkeypatch):
+    from kbeval.config import load_config
+    from kbeval.web import identical_packs
+    override = tmp_path / "two.yaml"
+    override.write_text('sweep:\n  pack: ["raw", "mid"]\n', encoding="utf-8")
+    assert identical_packs(load_config([base_yaml, override])) == []
