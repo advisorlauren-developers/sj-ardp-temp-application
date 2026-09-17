@@ -19,8 +19,9 @@ from kbeval.config import load_config
 from kbeval.eval import score_run
 from kbeval.runner import run_sweep
 
-ROUTES = ["/", "/qa", "/bug", "/feature", "/report", "/retrieval",
-          "/questions", "/q/qa_001", "/q/qa_101"]
+APP_ROUTES = ["/", "/qa", "/bug", "/feature"]
+LAB_ROUTES = ["/lab", "/lab/retrieval", "/lab/questions", "/lab/q/qa_001", "/lab/q/qa_101"]
+ROUTES = APP_ROUTES + LAB_ROUTES
 
 
 @pytest.fixture
@@ -122,16 +123,6 @@ def test_the_chat_is_single_turn(site):
     assert ask(client, "E-411 원인은?") == first      # no state accumulated anywhere
 
 
-def test_qa_says_it_is_not_a_measurement(site):
-    """Said on the page, not only in the code: the reader is the one who could
-    mistake an exploratory answer for a result."""
-    client, _, _ = site
-    body = client.get("/qa").text
-    assert "측정이 아닙니다" in body
-    assert "runs/" in body and "기록되지 않" in body
-    assert "각 질문은 독립적으로" in body
-
-
 def test_qa_works_without_javascript_or_says_what_to_run(site):
     client, _, _ = site
     body = client.get("/qa").text
@@ -187,7 +178,7 @@ def test_the_viewer_cannot_reach_the_write_path():
 
 def test_a_mock_run_is_labelled_as_one(site):
     client, _, _ = site
-    assert "mock 실행 결과입니다" in client.get("/report").text
+    assert "mock 실행 결과입니다" in client.get("/lab").text
 
 
 def test_a_real_run_carries_no_mock_banner(site, base_yaml, tmp_path, monkeypatch):
@@ -196,19 +187,19 @@ def test_a_real_run_carries_no_mock_banner(site, base_yaml, tmp_path, monkeypatc
         f"run:\n  out_dir: {tmp_path / 'runs'}\n"
         'agents:\n  mock_a: {provider: bedrock, id: "qwen.qwen3-32b"}\n', encoding="utf-8")
     monkeypatch.setattr(web, "CONFIG", [str(base_yaml), str(override)])
-    assert "mock 실행 결과입니다" not in TestClient(web.app).get("/report").text
+    assert "mock 실행 결과입니다" not in TestClient(web.app).get("/lab").text
 
 
 def test_covariates_are_shown_beside_the_retrieval_numbers(site):
     client, _, _ = site
-    body = client.get("/retrieval").text
+    body = client.get("/lab/retrieval").text
     assert "n_chunks" in body or "chunks" in body
     assert "gold injected" in body and "lost to budget" in body
 
 
 def test_the_health_strip_is_always_visible(site):
     client, _, _ = site
-    body = client.get("/report").text
+    body = client.get("/lab").text
     assert "errors" in body and "format_fail" in body and "unreadable" in body
 
 
@@ -216,7 +207,7 @@ def test_the_health_strip_is_always_visible(site):
 
 def test_an_unknown_question_does_not_crash(site):
     client, _, _ = site
-    r = client.get("/q/qa_does_not_exist")
+    r = client.get("/lab/q/qa_does_not_exist")
     assert r.status_code == 200 and "없는 문항" in r.text
 
 
@@ -224,7 +215,7 @@ def test_no_runs_yet_explains_what_to_do(base_yaml, tmp_path, monkeypatch):
     override = tmp_path / "empty.yaml"
     override.write_text(f"run:\n  out_dir: {tmp_path / 'nothing'}\n", encoding="utf-8")
     monkeypatch.setattr(web, "CONFIG", [str(base_yaml), str(override)])
-    r = TestClient(web.app).get("/report")
+    r = TestClient(web.app).get("/lab")
     assert r.status_code == 200 and "kbeval run" in r.text
 
 
@@ -233,7 +224,7 @@ def test_an_unscored_run_still_renders(base_yaml, tmp_path, monkeypatch):
     override.write_text(f"run:\n  out_dir: {tmp_path / 'runs'}\n", encoding="utf-8")
     monkeypatch.setattr(web, "CONFIG", [str(base_yaml), str(override)])
     run_sweep(load_config([base_yaml, override]))
-    r = TestClient(web.app).get("/report")
+    r = TestClient(web.app).get("/lab")
     assert r.status_code == 200 and "kbeval score" in r.text
 
 
@@ -256,7 +247,7 @@ def test_answers_come_back_as_data_not_markup(site):
 
 def test_an_unknown_run_id_falls_back_instead_of_failing(site):
     client, _, _ = site
-    assert client.get("/report", params={"run": "../etc"}).status_code == 200
+    assert client.get("/lab", params={"run": "../etc"}).status_code == 200
 
 
 def test_an_unknown_pack_falls_back(site):
@@ -290,3 +281,84 @@ def test_no_such_note_when_the_packs_really_differ(site, base_yaml, tmp_path, mo
     override = tmp_path / "two.yaml"
     override.write_text('sweep:\n  pack: ["raw", "mid"]\n', encoding="utf-8")
     assert identical_packs(load_config([base_yaml, override])) == []
+
+
+# --- the app and the instrument are separate surfaces ---------------------
+
+@pytest.mark.parametrize("path", APP_ROUTES)
+def test_the_app_nav_does_not_advertise_the_measurements(site, path):
+    """A single nav holding both "Q&A" and "실현율" invites the reader to assume
+    the page they are on is feeding the table. It is not, and the assumption is
+    expensive."""
+    client, _, _ = site
+    head = client.get(path).text.split("</header>")[0]
+    for lab in ("실현율", "/lab/retrieval", "/lab/questions"):
+        assert lab not in head
+
+
+@pytest.mark.parametrize("path", LAB_ROUTES)
+def test_the_lab_is_labelled_as_such(site, path):
+    client, _, _ = site
+    head = client.get(path).text.split("</header>")[0]
+    assert "측정" in head
+    assert ">Q&amp;A<" not in head
+
+
+def test_each_surface_offers_one_door_to_the_other(site):
+    client, _, _ = site
+    assert 'href="/lab"' in client.get("/qa").text
+    assert 'href="/"' in client.get("/lab").text
+
+
+def test_the_run_picker_belongs_to_the_lab_only(site):
+    """Which run you are reading is a measurement concept; it means nothing to
+    someone asking a question."""
+    client, _, _ = site
+    assert 'name="run"' not in client.get("/qa").text.split("</header>")[0]
+
+
+# --- what a real application is expected to have --------------------------
+
+def test_an_unknown_url_gets_a_page_not_a_stack_trace(site):
+    client, _, _ = site
+    r = client.get("/definitely-not-a-page")
+    assert r.status_code == 404
+    assert "없는 페이지" in r.text and "<title>" in r.text
+
+
+def test_pages_carry_a_favicon_and_a_real_title(site):
+    client, _, _ = site
+    body = client.get("/qa").text
+    assert 'rel="icon"' in body
+    assert "<title>Q&amp;A · 기술지원 어시스턴트</title>" in body
+
+
+def test_the_app_still_admits_what_is_answering(site):
+    """Quietly, as a chip rather than a banner -- but it does not disappear.
+    A reader who takes a stand-in's output for a model's was misled by the
+    screen, not by the harness."""
+    client, _, _ = site
+    body = client.get("/qa").text
+    assert "응답 모델" in body and "실제 모델이 아닙니다" in body
+
+
+def test_the_chat_says_it_is_not_recorded_without_shouting(site):
+    client, _, _ = site
+    body = client.get("/qa").text
+    assert "저장되지 않습니다" in body
+    assert "runs/" in body and "기록되지 않" in body
+    assert "footnote" in body                 # a footnote, not a banner
+    assert "각 질문은 독립적으로" in body
+
+
+def test_enter_sends_and_shift_enter_breaks_the_line(site):
+    client, _, _ = site
+    js = client.get("/qa").text
+    assert "ev.key === 'Enter'" in js and "ev.shiftKey" in js
+    assert "isComposing" in js                # Korean IME composition must not submit
+
+
+def test_the_composer_cannot_double_send(site):
+    client, _, _ = site
+    js = client.get("/qa").text
+    assert "if (pending) return" in js and "send.disabled" in js

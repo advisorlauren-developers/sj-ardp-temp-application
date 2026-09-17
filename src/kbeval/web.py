@@ -65,7 +65,22 @@ header{position:sticky;top:0;z-index:10;background:rgba(251,251,253,.82);
   backdrop-filter:saturate(180%) blur(20px);border-bottom:1px solid var(--line)}
 .bar{max-width:1080px;margin:0 auto;padding:14px 24px;display:flex;
   align-items:baseline;gap:28px}
-.brand{font-size:17px;font-weight:600;letter-spacing:-.02em;color:var(--ink)}
+.brand{font-size:17px;font-weight:600;letter-spacing:-.02em;color:var(--ink);white-space:nowrap}
+.brand .tag{font-size:11px;font-weight:500;color:var(--muted);border:1px solid var(--line);
+  border-radius:6px;padding:2px 6px;margin-left:4px;vertical-align:2px}
+.right{margin-left:auto;display:flex;gap:14px;align-items:center}
+a.quiet{color:var(--muted);font-size:12px;white-space:nowrap}
+.footnote{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);
+  color:var(--muted);font-size:12px;line-height:1.7}
+.footnote b{color:var(--ink);font-weight:600}
+textarea{font:inherit;padding:11px 14px;border:1px solid var(--line);border-radius:12px;
+  background:var(--surface);color:var(--ink);resize:none;flex:1;min-height:44px;
+  max-height:160px;line-height:1.55}
+textarea:focus{outline:none;border-color:var(--accent)}
+button[disabled]{opacity:.45;cursor:default}
+.copy{background:none;border:none;color:var(--muted);font-size:11px;padding:4px 2px;
+  cursor:pointer;font-family:inherit}
+.copy:hover{color:var(--accent)}
 nav{display:flex;gap:22px;font-size:13px}
 nav a{color:var(--muted)}
 nav a.on{color:var(--ink);font-weight:500}
@@ -233,27 +248,48 @@ def bar(v: float | None, lo: float = 0.0, hi: float = 1.0) -> str:
     return f'<span class="track"><span class="{cls}" style="width:{pct:.1f}%"></span></span>'
 
 
-def page(title: str, active: str, body: str, run: str | None, runs: list[str]) -> HTMLResponse:
+FAVICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'"
+           "%3E%3Crect width='32' height='32' rx='8' fill='%230A2540'/%3E%3Cpath d='M9 22V10h2.6v5.2"
+           "L16.4 10h3.2l-4.9 5.4 5.1 6.6h-3.3l-3.7-4.9-1.2 1.3V22z' fill='white'/%3E%3C/svg%3E")
+
+
+def page(title: str, active: str, body: str, run: str | None, runs: list[str],
+         surface: str = "app") -> HTMLResponse:
+    """One shell, two surfaces.
+
+    The product and the instrument are kept apart on screen because they are
+    apart in fact: nothing a visitor does in the app produces evidence, and
+    every number in the lab came from `kbeval run`. A single nav holding both
+    "Q&A" and "실현율" invites the reader to assume the page they are looking at
+    is feeding the table -- which would be false, and expensively so.
+    """
     def link(href: str, label: str, key: str) -> str:
-        q = f"?run={e(run)}" if run else ""
+        q = f"?run={e(run)}" if run and surface == "lab" else ""
         return f'<a class="{"on" if active == key else ""}" href="{href}{q}">{label}</a>'
 
-    picker = ""
-    if len(runs) > 1:
-        opts = "".join(f'<option value="{e(r)}"{" selected" if r == run else ""}>{e(r)}</option>'
-                       for r in runs)
-        picker = (f'<form method="get" style="margin:0"><select name="run" '
-                  f'onchange="this.form.submit()">{opts}</select></form>')
+    if surface == "lab":
+        brand = '<span class="brand">kbeval <span class="tag">측정</span></span>'
+        nav = (link("/lab", "실현율", "overview") + link("/lab/retrieval", "검색", "retrieval")
+               + link("/lab/questions", "문항", "questions"))
+        right = ""
+        if len(runs) > 1:
+            opts = "".join(f'<option value="{e(r)}"{" selected" if r == run else ""}>'
+                           f'{e(r)}</option>' for r in runs)
+            right = (f'<form method="get" style="margin:0"><select name="run" '
+                     f'onchange="this.form.submit()">{opts}</select></form>')
+        right += '<a class="quiet" href="/">앱 →</a>'
+    else:
+        brand = '<span class="brand">기술지원 어시스턴트</span>'
+        nav = (link("/", "홈", "home") + link("/qa", "Q&amp;A", "qa")
+               + link("/bug", "버그", "bug") + link("/feature", "기능 추가", "feature"))
+        right = '<a class="quiet" href="/lab">측정 →</a>'
 
     return HTMLResponse(f"""<!doctype html><html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{e(title)} · kbeval</title><style>{CSS}</style></head><body>
-<header><div class="bar">
-  <span class="brand">kbeval</span>
-  <nav>{link('/', '홈', 'home')}{link('/qa', 'Q&amp;A', 'qa')}
-       {link('/report', '실현율', 'overview')}{link('/retrieval', '검색', 'retrieval')}
-       {link('/questions', '문항', 'questions')}</nav>
-  <span style="margin-left:auto">{picker}</span>
+<title>{e(title)}</title><link rel="icon" href="{FAVICON}">
+<style>{CSS}</style></head><body>
+<header><div class="bar">{brand}<nav>{nav}</nav>
+  <span class="right">{right}</span>
 </div></header><main>{body}</main></body></html>""")
 
 
@@ -262,7 +298,7 @@ def no_runs(active: str) -> HTMLResponse:
             '<p class="sub">측정은 CLI에서만 실행됩니다. 이 화면은 결과를 읽기만 합니다.</p>'
             '<div class="banner"><b>uv run kbeval run</b> 로 스윕을 돌리고 '
             '<b>uv run kbeval score</b> 로 채점한 뒤 새로고침하세요.</div>')
-    return page("no runs", active, body, None, [])
+    return page("기록 없음 · kbeval 측정", active, body, None, [], "lab")
 
 
 def health_pills(rep: Report) -> str:
@@ -277,6 +313,20 @@ def health_pills(rep: Report) -> str:
             + "</div>")
 
 
+def mock_chip(c: Config) -> str:
+    """The app surface still has to admit what is answering it.
+
+    A banner would shout; a chip is enough. What it must not do is disappear --
+    a reader who takes a stand-in's output for a model's is being misled by the
+    screen, not by the harness.
+    """
+    providers = {a.provider for a in c.agents.values()}
+    if not providers <= {"mock", "mock_judge"}:
+        return ""
+    return ('<div class="pills"><span class="pill">응답 모델 <b>mock</b> — '
+            '실제 모델이 아닙니다. 답변 품질을 평가하지 마세요.</span></div>')
+
+
 def mock_banner(c: Config) -> str:
     providers = {a.provider for a in c.agents.values()} | {c.judge.agent.provider}
     if not providers <= {"mock", "mock_judge"}:
@@ -287,7 +337,7 @@ def mock_banner(c: Config) -> str:
 
 # --- pages ---------------------------------------------------------------
 
-@app.get("/report", response_class=HTMLResponse)
+@app.get("/lab", response_class=HTMLResponse)
 def overview(run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
@@ -339,10 +389,10 @@ def overview(run: str | None = None) -> HTMLResponse:
 <tr><th>pair</th><th>τ</th><th style="text-align:left">note</th></tr>
 {tau or '<tr><td colspan="3" class="empty">–</td></tr>'}
 </table></div>"""
-    return page("개요", "overview", body, rid, list_runs(c))
+    return page("개요 · kbeval 측정", "overview", body, rid, list_runs(c), "lab")
 
 
-@app.get("/retrieval", response_class=HTMLResponse)
+@app.get("/lab/retrieval", response_class=HTMLResponse)
 def retrieval(run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
@@ -373,10 +423,10 @@ def retrieval(run: str | None = None) -> HTMLResponse:
     <th>gold injected</th><th>lost to budget</th><th>inj tokens</th><th>inj chunks</th></tr>
 {rows or '<tr><td colspan="12" class="empty">–</td></tr>'}
 </table></div>"""
-    return page("검색", "retrieval", body, rid, list_runs(c))
+    return page("검색 · kbeval 측정", "retrieval", body, rid, list_runs(c), "lab")
 
 
-@app.get("/questions", response_class=HTMLResponse)
+@app.get("/lab/questions", response_class=HTMLResponse)
 def questions(run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
@@ -391,7 +441,7 @@ def questions(run: str | None = None) -> HTMLResponse:
         correct = [v for v in correct if v is not None]
         rate = sum(correct) / len(correct) if correct else None
         kind = "answerable" if q.answerable else "unanswerable"
-        rows += (f"<tr><td class='k'><a href='/q/{e(q.qid)}?run={e(rid)}'>{e(q.qid)}</a></td>"
+        rows += (f"<tr><td class='k'><a href='/lab/q/{e(q.qid)}?run={e(rid)}'>{e(q.qid)}</a></td>"
                  f"<td style='text-align:left'>{e(q.query)}</td>"
                  f"<td class='dim'>{kind}</td>"
                  f"<td>{num(rate)}{bar(rate)}</td></tr>")
@@ -403,10 +453,10 @@ def questions(run: str | None = None) -> HTMLResponse:
 <tr><th>qid</th><th style="text-align:left">질문</th><th>유형</th><th>정답률(전 스펙)</th></tr>
 {rows}
 </table></div>"""
-    return page("문항", "questions", body, rid, list_runs(c))
+    return page("문항 · kbeval 측정", "questions", body, rid, list_runs(c), "lab")
 
 
-@app.get("/q/{qid}", response_class=HTMLResponse)
+@app.get("/lab/q/{qid}", response_class=HTMLResponse)
 def question_detail(qid: str, run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
@@ -418,8 +468,9 @@ def question_detail(qid: str, run: str | None = None) -> HTMLResponse:
 
     q = next((x for x in load_questions(c.eval.questions, c.eval.intents) if x.qid == qid), None)
     if q is None:
-        return page("없는 문항", "questions",
-                    f"<h1>없는 문항</h1><p class='sub'>{e(qid)}</p>", rid, list_runs(c))
+        return page("없는 문항 · kbeval 측정", "questions",
+                    f"<h1>없는 문항</h1><p class='sub'>{e(qid)}</p>",
+                    rid, list_runs(c), "lab")
 
     cards = ""
     for t in sorted((t for t in traces if t["qid"] == qid),
@@ -458,7 +509,7 @@ def question_detail(qid: str, run: str | None = None) -> HTMLResponse:
     body = f"""<h1>{e(q.qid)}</h1>
 <p class="sub">{e(q.query)}</p>{gold}
 <div class="grid">{cards}</div>"""
-    return page(q.qid, "questions", body, rid, list_runs(c))
+    return page(f"{q.qid} · kbeval 측정", "questions", body, rid, list_runs(c), "lab")
 
 
 INTENTS = [
@@ -522,22 +573,30 @@ def home(run: str | None = None) -> HTMLResponse:
 나머지는 화면이 아니라 <b>데이터를 기다리는 중</b>입니다 —
 <code>data/eval/questions.jsonl</code>에 해당 <code>intent</code> 문항이 들어오고
 <code>configs/base.yaml</code>의 <code>eval.intents</code>에 추가되면 열립니다.</div>"""
-    return page("kbeval", "home", body, pick_run(c, run), list_runs(c))
+    return page("기술지원 어시스턴트", "home", body, pick_run(c, run), list_runs(c))
 
 
 @app.get("/bug", response_class=HTMLResponse)
+def bug(run: str | None = None) -> HTMLResponse:
+    return not_yet("bug", "버그", run)
+
+
 @app.get("/feature", response_class=HTMLResponse)
-def not_yet(run: str | None = None) -> HTMLResponse:
+def feature(run: str | None = None) -> HTMLResponse:
+    return not_yet("feature", "기능 추가", run)
+
+
+def not_yet(key: str, label: str, run: str | None) -> HTMLResponse:
     c = cfg()
-    body = """<h1>준비 중</h1>
-<p class="sub">이 유형의 문항이 아직 평가 세트에 없습니다.</p>
+    body = f"""<h1>{e(label)}</h1>
+<p class="sub">준비 중 — 이 유형의 문항이 아직 평가 세트에 없습니다.</p>
 <div class="banner">빈 화면을 먼저 만들지 않습니다. 라벨된 문항 없이 답변만 보여주면
 좋아 보이는지 아닌지를 판단할 근거가 없고, 그건 측정이 아니라 인상입니다.<br><br>
 필요한 것: <code>scripts/make_questions.py</code>에 해당 intent 문항과 gold 앵커 추가 →
 <code>data/eval/questions.jsonl</code> 재생성 →
 <code>configs/base.yaml</code>의 <code>eval.intents</code>에 추가.</div>
 <p class="sub"><a href="/qa">Q&amp;A로 가기 →</a></p>"""
-    return page("준비 중", "home", body, pick_run(c, run), list_runs(c))
+    return page(f"{label} · 기술지원 어시스턴트", key, body, pick_run(c, run), list_runs(c))
 
 
 def answer_payload(c: Config, question: str, pack: str) -> dict[str, Any]:
@@ -585,6 +644,16 @@ def answer_payload(c: Config, question: str, pack: str) -> dict[str, Any]:
     }
 
 
+@app.exception_handler(404)
+async def not_found(request, exc) -> HTMLResponse:
+    """A JSON stack trace is not a page. The app owns its own dead ends."""
+    body = ("<h1>없는 페이지</h1>"
+            '<p class="sub">주소를 다시 확인해 주세요.</p>'
+            '<p class="sub"><a href="/">홈으로 →</a></p>')
+    r = page("없는 페이지 · 기술지원 어시스턴트", "", body, None, [])
+    return HTMLResponse(r.body, status_code=404)
+
+
 @app.get("/api/ask")
 def api_ask(q: str, pack: str = "") -> dict[str, Any]:
     """The chat's only backend call. Reads packs, writes nothing."""
@@ -602,7 +671,9 @@ const form = document.getElementById('composer');
 const input = document.getElementById('q');
 const packSel = document.getElementById('pack');
 const empty = document.getElementById('empty');
+const send = document.getElementById('send');
 let turns = [];
+let pending = false;
 
 function store() {
   try { sessionStorage.setItem(KEY, JSON.stringify(turns)); } catch (_) {}
@@ -658,6 +729,16 @@ function render(question, a) {
     bot.appendChild(el('div', 'meta', '검색된 문단이 없습니다 — 질문의 어휘가 코퍼스와 겹치지 않습니다.'));
   }
 
+  const tools = el('div', 'meta');
+  const copy = el('button', 'copy', '답변 복사');
+  copy.addEventListener('click', () => {
+    navigator.clipboard.writeText(body).then(
+      () => { copy.textContent = '복사됨'; setTimeout(() => copy.textContent = '답변 복사', 1400); },
+      () => { copy.textContent = '복사할 수 없습니다'; });
+  });
+  tools.appendChild(copy);
+  bot.appendChild(tools);
+
   bot.appendChild(drawer('지식 주입 없이 같은 질문을 하면', box => {
     box.appendChild(el('div', 'base',
       a.baseline_error ? ('오류 · ' + a.baseline_error) : a.baseline));
@@ -666,7 +747,14 @@ function render(question, a) {
   }));
   thread.appendChild(bot);
 }
+function busy(on) {
+  pending = on;
+  send.disabled = on;
+  send.textContent = on ? '검색 중' : '전송';
+}
 async function ask(question) {
+  if (pending) return;
+  busy(true);
   empty.hidden = true;
   const me = el('div', 'turn me');
   me.appendChild(el('div', 'bubble', question));
@@ -687,14 +775,28 @@ async function ask(question) {
   } catch (err) {
     wait.textContent = '요청이 실패했습니다 · ' + err;
   }
+  busy(false);
   window.scrollTo(0, document.body.scrollHeight);
 }
-form.addEventListener('submit', ev => {
-  ev.preventDefault();
+function submit() {
   const v = input.value.trim();
-  if (!v) return;
+  if (!v || pending) return;
   input.value = '';
+  input.style.height = 'auto';
   ask(v);
+}
+form.addEventListener('submit', ev => { ev.preventDefault(); submit(); });
+input.addEventListener('keydown', ev => {
+  // Enter sends, Shift+Enter breaks the line -- what a chat box is expected
+  // to do; a textarea that only submits on a button feels like a form.
+  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+    ev.preventDefault();
+    submit();
+  }
+});
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 160) + 'px';
 });
 document.querySelectorAll('[data-sample]').forEach(b =>
   b.addEventListener('click', ev => { ev.preventDefault(); ask(b.dataset.sample); }));
@@ -723,33 +825,37 @@ def qa(pack: str = "", run: str | None = None) -> HTMLResponse:
     twin_note = ""
     if twins:
         pairs = " / ".join(" = ".join(g) for g in twins)
-        twin_note = (f'<div class="banner"><b>{e(pairs)}</b> 는 현재 코퍼스에서 '
-                     f'청크가 완전히 동일합니다. 선택을 바꿔도 답이 같은 것은 고장이 아니라, '
-                     f'그 전처리 단계가 이 문서들에 대해 <b>할 일이 없다</b>는 뜻입니다 — '
-                     f'중복이 없어 <code>dedup</code>이, 표기가 이미 일관돼 '
-                     f'<code>normalize_terms</code>가 바꿀 것을 찾지 못합니다.</div>')
+        twin_note = (f'<br><b>{e(pairs)}</b> 는 현재 문서에서 청크가 완전히 동일합니다. '
+                     f'선택을 바꿔도 답이 같은 것은 고장이 아니라, 그 전처리 단계가 이 '
+                     f'문서들에 대해 할 일이 없다는 뜻입니다 — 중복이 없어 <code>dedup</code>이, '
+                     f'표기가 이미 일관돼 <code>normalize_terms</code>가 바꿀 것을 '
+                     f'찾지 못합니다.')
 
     body = f"""<h1>기술지원 Q&amp;A</h1>
-<p class="sub">사내 문서(OLT·BNG 가이드)를 근거로 답합니다. 근거 문단과 baseline을 함께 펼쳐 볼 수 있습니다.</p>
-{mock_banner(c)}{twin_note}
-<div class="banner"><b>측정이 아닙니다.</b> 여기서 던진 질문은 <code>runs/</code>에
-기록되지 않고 run id도 만들지 않습니다. 라벨된 gold가 없어 채점도 없습니다 —
-점수가 필요하면 <code>kbeval run</code> 경로 하나뿐입니다.<br>
-<b>각 질문은 독립적으로 답합니다.</b> 앞의 대화를 컨텍스트로 넣지 않습니다.
-그래야 화면에 보이는 동작이 실제로 측정하는 동작과 같습니다.</div>
+<p class="sub">OLT·BNG 운용 가이드를 근거로 답합니다. 답변마다 근거 문단을 펼쳐 볼 수 있습니다.</p>
+{mock_chip(c)}
 
 <noscript><div class="banner">이 화면은 자바스크립트가 필요합니다.
 같은 일을 터미널에서 하려면 <code>kbeval ask qa_001 --mode rag --pack mid</code>.</div></noscript>
 
 <div class="chat" id="thread"></div>
-<div class="empty-chat" id="empty">질문을 입력해 보세요.<div class="chips"
+<div class="empty-chat" id="empty">무엇이든 물어보세요.<div class="chips"
   style="justify-content:center">{samples}</div></div>
 
 <div class="composer"><form id="composer" autocomplete="off">
-<input type="text" id="q" placeholder="예: OLT에서 E411 인증 실패가 뜨는데 어떻게 조치하나요?" autofocus>
-<select id="pack">{opts}</select>
-<button type="submit">전송</button>
+<textarea id="q" rows="1" autofocus
+  placeholder="예: OLT에서 E411 인증 실패가 뜨는데 어떻게 조치하나요?"></textarea>
+<select id="pack" title="지식베이스 준비 수준">{opts}</select>
+<button type="submit" id="send">전송</button>
 <button type="button" class="ghost" id="clear">초기화</button>
 </form></div>
+
+<div class="footnote">
+<b>이 대화는 저장되지 않습니다.</b> 질문은 <code>runs/</code>에 기록되지 않고 run id도
+만들지 않습니다. 실험 기록은 <code>kbeval run</code> 한 경로뿐이고, 그 결과는
+<a href="/lab">측정</a>에서 봅니다.<br>
+<b>각 질문은 독립적으로 답합니다.</b> 앞의 대화를 컨텍스트에 넣지 않습니다 —
+그래야 여기서 보이는 동작이 실제로 측정하는 동작과 같습니다.
+{twin_note}</div>
 <script>{CHAT_JS}</script>"""
-    return page("Q&A", "qa", body, rid, list_runs(c))
+    return page("Q&A · 기술지원 어시스턴트", "qa", body, rid, list_runs(c))
