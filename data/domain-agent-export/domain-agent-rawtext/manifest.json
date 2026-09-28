@@ -1,0 +1,27 @@
+{
+  "name": "domain-agent-rawtext",
+  "chunker": "domain-agent-semantic",
+  "transforms": [],
+  "source": {
+    "adapter": "domain-agent",
+    "run": "20260921T005310599753-6b47298a",
+    "document_id": "XCAL-Mobile_User_Guide_v5_xx_rev34"
+  },
+  "n_chunks": 12,
+  "n_docs": 1,
+  "total_chars": 9113,
+  "avg_chunk_chars": 759.4,
+  "max_chunk_chars": 1195,
+  "coordinate_space_complete": true,
+  "coordinate_space_chars": 9124,
+  "domain_agent": {
+    "analysis_run_id": "20260921T005310599753-6b47298a",
+    "model_id": "qwen.qwen3-32b-v1:0",
+    "prompt_template_sha256": "a24594e32da53efe437bb1f7b2b41204355ee7d3ee8e335edaa6e5be545b2025",
+    "pack_sha256s": [
+      "5b56a03536afa982c3af429cf5cbf50504a015810c8524cbf02fd219b60421ff",
+      "cd884abb12e381ca0b8e3da1eb134712e6c541f76478a458d6c2512e7d27710e"
+    ],
+    "frozen_context_sha256": "5710f13236dbba013125d461bd025bb27aae4dc48ecdf8e7cc4afce14d1ac40f"
+  }
+}
