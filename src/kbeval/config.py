@@ -93,6 +93,25 @@ class TokenizerCfg(Strict):
     bigrams: bool = True     # Hangul syllable bigrams; off = whitespace only
 
 
+class EmbedderCfg(Strict):
+    """Which embedding model turns text into vectors. Fixed across packs.
+
+    `dim` is the requested output size (Cohere v4 accepts 256/512/1024/1536).
+    Region lives here rather than being borrowed from `llm:` -- the embedder
+    is part of the retriever, and the retriever must not change because the
+    candidate model moved regions.
+    """
+    provider: str = "mock"          # EMBEDDERS registry key
+    id: str = "mock-embed"
+    dim: int = 1024
+    region: str = "us-west-2"
+    batch: int = 64
+
+
+class HybridCfg(Strict):
+    rrf_k: int = 60                 # reciprocal rank fusion constant (Cormack et al.)
+
+
 class RetrievalCfg(Strict):
     """Fixed across packs, by design.
 
@@ -108,6 +127,8 @@ class RetrievalCfg(Strict):
     candidate_k: int = 10
     bm25: BM25Cfg = Field(default_factory=BM25Cfg)
     tokenizer: TokenizerCfg = Field(default_factory=TokenizerCfg)
+    embedder: EmbedderCfg = Field(default_factory=EmbedderCfg)   # dense / hybrid only
+    hybrid: HybridCfg = Field(default_factory=HybridCfg)         # hybrid only
 
 
 class PromptsCfg(Strict):
@@ -240,6 +261,14 @@ class Config(Strict):
         payload.pop("scoring", None)
         # the judge prompt PATH belongs to grading too, not just its contents
         payload.get("prompts", {}).pop("judge", None)
+        # Settings the chosen retriever never reads do not shape a trace. This
+        # also keeps every bm25 run's coordinate exactly where it was before
+        # the embedder existed -- otherwise adding a field would orphan them.
+        r = payload["retrieval"]
+        if r["retriever"] == "bm25":
+            r.pop("embedder", None)
+        if r["retriever"] != "hybrid":
+            r.pop("hybrid", None)
         return json.dumps(payload, sort_keys=True, ensure_ascii=False,
                           separators=(",", ":"))
 

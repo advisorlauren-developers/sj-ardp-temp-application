@@ -15,3 +15,12 @@ wheels/
 data/packs
 # 실행 산출물. 프로그램만 append 한다 (claude.md 참조)
 runs/
+
+# 추출 산출물. PDF에서 결정적으로 재생성된다 (uv.lock이 추출기를 고정)
+data/extracted
+
+# 임베딩 캐시 = dense 인덱스. provider 쪽 모델 갱신이 pack 효과로 보이지 않게 고정한다
+data/embed_cache
+
+# macOS
+.DS_Store

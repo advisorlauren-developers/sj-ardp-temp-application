@@ -91,6 +91,31 @@ def test_the_answer_carries_its_own_baseline(site):
     assert a["answer"] != a["baseline"]
 
 
+def test_compare_answers_the_same_question_from_a_second_pack(site):
+    """Pack-vs-pack at the question level: same agent/prompt/budget, only the
+    index differs. The bare baseline stays -- a better pack is not proof that
+    either pack helped."""
+    client, _, _ = site
+    q = "E-411 인증 실패 조치 방법"
+    a = client.get("/api/ask", params={"q": q, "pack": "mid", "compare": "raw"}).json()
+    solo = ask(client, q, "raw")
+
+    assert a["compare"]["pack"] == "raw"
+    assert a["compare"]["answer"] == solo["answer"]          # same path as a direct ask
+    assert [s["chunk_id"] for s in a["compare"]["sources"]] == \
+           [s["chunk_id"] for s in solo["sources"]]
+    assert a["baseline"] == "답변 불가"
+
+
+def test_compare_is_off_by_default_and_ignores_nonsense(site):
+    client, _, _ = site
+    q = "E-411 인증 실패 조치 방법"
+    assert ask(client, q)["compare"] is None
+    for bad in ("mid", "ghost"):                              # itself, unknown
+        r = client.get("/api/ask", params={"q": q, "pack": "mid", "compare": bad}).json()
+        assert r["compare"] is None
+
+
 def test_only_injected_passages_are_offered_as_sources(site):
     """A chunk that lost to the token budget was never seen by the model, so
     listing it as a source would be a lie about provenance."""
@@ -362,3 +387,39 @@ def test_the_composer_cannot_double_send(site):
     client, _, _ = site
     js = client.get("/qa").text
     assert "if (pending) return" in js and "send.disabled" in js
+
+
+# --- post-hoc attribution (display only) -----------------------------------
+
+def _src(cid: str, rank: int, text: str) -> dict:
+    return {"chunk_id": cid, "rank": rank, "text": text}
+
+
+def test_attribution_only_points_at_injected_lines(cfg):
+    """An estimate may be wrong, but it may never cite text the model did not
+    receive -- that would be a provenance lie, not an estimation error."""
+    srcs = [_src("a", 1, "DL MAC TP\nUL MAC TP"), _src("b", 2, "Request a license by sending a MAC address.")]
+    att = web.attribute(cfg, "DL MAC TP", srcs)
+    lines = {ln for s in srcs for ln in s["text"].splitlines()}
+    assert att and att[0]["line"] == "DL MAC TP" and att[0]["chunk_id"] == "a"
+    assert all(x["line"] in lines for x in att)
+
+
+def test_attribution_is_empty_for_an_abstention(cfg):
+    assert web.attribute(cfg, "답변 불가", [_src("a", 1, "anything at all here")]) == []
+
+
+def test_attribution_uses_the_retrievers_embedder_when_dense(cfg):
+    c = cfg.model_copy(deep=True)
+    c.retrieval.retriever = "hybrid"                  # mock embedder: no AWS
+    att = web.attribute(c, "SS-RSRQ quality", [_src("a", 1, "SS-RSRQ quality ratio\nPCI")])
+    assert att and att[0]["how"] == "embedding"
+
+
+def test_origin_is_decided_by_content_not_by_pack_name():
+    """'raw' means the line exists in the document at this chunk's offsets.
+    A transform's output is anything else -- whatever the pack is called."""
+    raw = "5G NR CA shows PCI, NR-ARFCN,\nRaster Frequency, SS-RSRP, SS-RSRQ, and SSB Index."
+    assert web.origin("Raster Frequency, SS-RSRP, SS-RSRQ, and SSB Index.", raw) == "raw"
+    assert web.origin("SS-RSRQ, which is SS-RSRP divided by the total power", raw) == "added"
+    assert web.origin("   ", raw) == "added"

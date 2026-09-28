@@ -1,0 +1,26 @@
+# 검색기를 BM25 + 다국어 임베딩(RRF)으로 바꾼다 (2026-09-23).
+#
+#   uv run kbeval retrieval-eval -c configs/base.yaml -c configs/domain-agent.yaml \
+#                                -c configs/retrieval-hybrid.yaml
+#
+# **왜 필요한가.** 질문은 한국어, 매뉴얼은 영어다. BM25는 질문에 섞인 영문 토큰
+# (SS-RSRQ, MAC …)으로만 매칭하고 "라이선스"는 "license"를 영영 만나지 못한다.
+#
+# **pack 간 고정.** 이 블록은 최상위라 모든 pack에 같은 임베더가 쓰인다.
+# 인덱스(벡터)만 pack 종속이고, 그건 data/embed_cache에 고정된다.
+#
+# **해시가 바뀐다.** bm25 run과는 다른 좌표다. 두 검색기의 결과를 한 표에서
+# 비교하려면 같은 run이 아니라 두 run을 나란히 놓는다.
+#
+# 모델: Cohere Embed v4 (INFERENCE_PROFILE → `us.` 접두사 필수).
+# multilingual-v3는 입력이 512 토큰에서 잘린다 — da_full의 의미 확장은 청크
+# **끝**에 붙으므로, 잘리면 확장만 골라서 지워진 인덱스가 된다.
+
+retrieval:
+  retriever: hybrid
+  embedder:
+    provider: bedrock
+    id: "us.cohere.embed-v4:0"
+    dim: 1024
+    region: us-west-2
+  hybrid: {rrf_k: 60}

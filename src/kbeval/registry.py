@@ -36,5 +36,6 @@ SOURCES: Registry = Registry("source adapter")     # S2
 CHUNKERS: Registry = Registry("chunker")           # S3
 TRANSFORMS: Registry = Registry("pack transform")  # S3
 RETRIEVERS: Registry = Registry("retriever")       # S5
+EMBEDDERS: Registry = Registry("embedder")         # S5b (dense / hybrid)
 AGENTS: Registry = Registry("agent mode")          # S6
 SCORERS: Registry = Registry("scorer")             # S8

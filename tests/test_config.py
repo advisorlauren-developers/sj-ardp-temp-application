@@ -15,7 +15,8 @@ from kbeval.config import Config, dump_resolved, load_config
 
 def test_base_config_loads(cfg):
     assert set(cfg.packs) == {"raw", "mid", "full"}
-    assert cfg.eval.questions == "data/eval/questions.jsonl"
+    assert cfg.eval.questions == "data/eval/sample_questions.jsonl"
+    assert cfg.source.adapter == "pdf_docs"
 
 
 def test_unknown_top_level_key_is_an_error(raw_cfg):

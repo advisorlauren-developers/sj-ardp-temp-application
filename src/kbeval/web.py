@@ -186,6 +186,14 @@ a.chip:hover{border-color:var(--accent);color:var(--accent);text-decoration:none
 .turn.bot summary:hover{color:var(--accent)}
 .drawer{border:1px solid var(--line);border-radius:12px;background:var(--surface);
   padding:4px 14px 12px;margin-top:4px}
+.turn.bot .drawer details{max-width:none}
+.turn.bot .drawer .bubble{max-width:none;margin-top:10px}   /* the compared answer reads like the answer */
+.src details.full{margin-top:6px}
+.src details.full .drawer{background:var(--bg)}
+.attr{max-width:min(78%,640px);margin-top:2px}
+.hitline.added{border-left-style:dashed}
+.hitline{font-size:13px;line-height:1.6;margin-top:6px;padding-left:10px;
+  border-left:2px solid var(--accent);white-space:pre-wrap;word-break:break-word}
 .composer{position:sticky;bottom:0;background:linear-gradient(to bottom,
   rgba(251,251,253,0) 0%,var(--bg) 26%);padding:20px 0 8px;margin-top:8px}
 .composer form{margin:0;align-items:center}
@@ -599,13 +607,153 @@ def not_yet(key: str, label: str, run: str | None) -> HTMLResponse:
     return page(f"{label} · 기술지원 어시스턴트", key, body, pick_run(c, run), list_runs(c))
 
 
-def answer_payload(c: Config, question: str, pack: str) -> dict[str, Any]:
+def match_evidence(query: str, text: str, n_lines: int = 3) -> tuple[list[str], list[str]]:
+    """Why BM25 picked this chunk: the query words it shares, and the lines they sit on.
+
+    The retriever is lexical. A chunk shown with no reason reads as "the
+    model's evidence"; shown with the words that matched, it reads as what it
+    is -- a word overlap, which a Korean question over an English manual
+    mostly finds only on the English terms. Display only: it re-derives the
+    overlap with the retriever's own tokenizer and changes nothing upstream.
+    """
+    from .retrieval.base import tokenize
+    ctoks = set(tokenize(text))
+    matched = list(dict.fromkeys(w for w in tokenize(query, bigrams=False) if w in ctoks))
+    if not matched:
+        return [], []
+    want = set(matched)
+    scored = []
+    for i, ln in enumerate(text.splitlines()):
+        k = len(want & set(tokenize(ln, bigrams=False)))
+        if k:
+            scored.append((-k, i, ln.strip()[:240]))
+    top = sorted(sorted(scored)[:n_lines], key=lambda t: t[1])
+    return matched, [ln for _, _, ln in top]
+
+
+_DOCS: dict[str, dict[str, str]] = {}
+
+
+def doc_texts(c: Config) -> dict[str, str]:
+    """Document text by id -- the coordinate space every chunk offset points into."""
+    from .sources import load_documents
+    if c.hash not in _DOCS:
+        _DOCS[c.hash] = {d.doc_id: d.text for d in load_documents(c.source)}
+    return _DOCS[c.hash]
+
+
+def origin(line: str, raw: str) -> str:
+    """'raw' if the line is in the document at this chunk's offsets, else 'added'.
+
+    This is how a reader tells a transform's output from the source: rule 1
+    keeps offsets on the original text, so anything in a chunk that is not in
+    doc.text[start:end] was put there by a transform (e.g. domain_agent_enrich).
+    Checked by content, not by pack name -- a label that trusted the name would
+    stay "enriched" even if the transform silently did nothing.
+    """
+    t = line.strip()
+    return "raw" if t and t in raw else "added"
+
+
+def injected_sources(c: Config, rag_agent, rag, query: str) -> list[dict[str, Any]]:
+    """Only what reached the model. A chunk the budget dropped is not a source."""
+    docs = doc_texts(c)
+    pk = rag_agent.deps.pack
+    hits = {h.chunk_id: h for h in rag.retrieved}
+    sources = []
+    for cid in rag.injected_chunk_ids:
+        ch = pk.get(cid) if pk.has(cid) else None
+        text = ch.text if ch else ""
+        if text.startswith("["):            # inline_meta header sits on its own line
+            text = text.split("\n", 1)[-1]
+        raw = docs.get(ch.doc_id, "")[ch.char_start:ch.char_end] if ch else ""
+        matched, lines = match_evidence(query, text)
+        sources.append({
+            "chunk_id": cid,
+            "heading": (ch.meta.get("heading_path") or ch.meta.get("title") or "") if ch else "",
+            "score": round(hits[cid].score, 2) if cid in hits else None,
+            "rank": hits[cid].rank if cid in hits else None,
+            "text": text.strip(),
+            "matched": matched,
+            "lines": [{"text": ln, "origin": origin(ln, raw)} for ln in lines],
+            "n_added": sum(origin(ln, raw) == "added" for ln in text.splitlines() if ln.strip()),
+            "_raw": raw,
+        })
+    return sources
+
+
+# The one abstention string (CLAUDE.md S6). Nothing to attribute when the model declined.
+ABSTAIN_TEXT = "답변 불가"
+
+RETRIEVER_NOTE = {
+    "bm25": "검색은 단어 일치(BM25)입니다. \"겹친 단어\"가 이 문단이 뽑힌 이유의 전부입니다.",
+    "dense": "검색은 다국어 임베딩 유사도입니다. 단어가 겹치지 않아도 뜻이 가까우면 뽑힙니다.",
+    "hybrid": "검색은 단어 일치(BM25)와 다국어 임베딩 순위를 합친 것(RRF)입니다. "
+              "\"겹친 단어\"는 그중 BM25 쪽 이유입니다.",
+}
+
+
+def attribute(c: Config, answer: str, sources: list[dict[str, Any]],
+              n: int = 3) -> list[dict[str, Any]]:
+    """Which injected lines the answer sits closest to -- an ESTIMATE, after the fact.
+
+    The candidate model is not asked to cite: that would change the prompt,
+    and the prompt is a controlled variable (rule 6, and the prompt digest in
+    the config hash). So the screen does the next honest thing -- it compares
+    the finished answer against the lines the model was given, and labels the
+    result as an estimate. It is display-only and never reaches a trace.
+
+    Uses the retriever's own embedder when there is one, so "close" means the
+    same thing here as it does in search; plain token overlap otherwise.
+    """
+    from .retrieval.base import tokenize
+    if not answer or answer.strip() == ABSTAIN_TEXT:
+        return []
+    # Short lines stay: this manual is mostly table rows ("DL MAC TP"), and
+    # those are exactly what a model quotes. Repeats keep their first place.
+    seen: set[str] = set()
+    cands = []
+    for s in sources:
+        for ln in s["text"].splitlines():
+            t = ln.strip()
+            if len(t) >= 3 and t not in seen:
+                seen.add(t)
+                cands.append((s["chunk_id"], s["rank"], t, origin(t, s.get("_raw", ""))))
+    if not cands:
+        return []
+    if c.retrieval.retriever in ("dense", "hybrid"):
+        from .embed import build_embedder
+        emb = build_embedder(c.retrieval.embedder)
+        q = emb.embed([answer], "query")[0]
+        vs = emb.embed([t for _, _, t, _ in cands], "document")
+        norm = lambda v: sum(x * x for x in v) ** .5 or 1.0
+        qn = norm(q)
+        sims = [sum(a * b for a, b in zip(q, v)) / (qn * norm(v)) for v in vs]
+        how = "embedding"
+    else:
+        aw = set(tokenize(answer))
+        sims = [len(aw & set(tokenize(t))) / (len(set(tokenize(t))) or 1) for _, _, t, _ in cands]
+        how = "overlap"
+    best = sorted(range(len(cands)), key=lambda i: (-sims[i], i))[:n]
+    return [{"chunk_id": cands[i][0], "rank": cands[i][1], "line": cands[i][2][:300],
+             "origin": cands[i][3], "sim": round(sims[i], 3), "how": how}
+            for i in best if sims[i] > 0]
+
+
+def answer_payload(c: Config, question: str, pack: str,
+                   compare: str | None = None) -> dict[str, Any]:
     """One question, answered exactly the way the sweep answers it.
 
     Single turn, no conversation history. Carrying the thread into the prompt
     would make the demo show behaviour the harness never measures -- the
     control is one question against one controlled context, and a screen that
     quietly does something else is worse than no screen.
+
+    `compare` answers the same question through rag on a second pack. Same
+    agent, same prompt, same budget, same retriever -- only the index differs,
+    which is the pack axis read one question at a time. The bare baseline stays
+    regardless: pack-vs-pack says which corpus is better, not whether either
+    one helped at all.
     """
     from .types import Question
     probe = Question(qid="qa-live", intent="qa", query=question, answerable=True)
@@ -614,24 +762,8 @@ def answer_payload(c: Config, question: str, pack: str) -> dict[str, Any]:
     rag_agent = build_agent_for(c, agent, "rag", pack)
     rag = rag_agent.answer(probe)
     base = build_agent_for(c, agent, "bare", None).answer(probe)
-    pk = rag_agent.deps.pack
-    hits = {h.chunk_id: h for h in rag.retrieved}
 
-    sources = []
-    for cid in rag.injected_chunk_ids:
-        ch = pk.get(cid) if pk.has(cid) else None
-        text = ch.text if ch else ""
-        if text.startswith("["):            # inline_meta header sits on its own line
-            text = text.split("\n", 1)[-1]
-        sources.append({
-            "chunk_id": cid,
-            "heading": (ch.meta.get("heading_path") or ch.meta.get("title") or "") if ch else "",
-            "score": round(hits[cid].score, 2) if cid in hits else None,
-            "rank": hits[cid].rank if cid in hits else None,
-            "text": text.strip(),
-        })
-
-    return {
+    out = {
         "answer": rag.text, "error": rag.error,
         "baseline": base.text, "baseline_error": base.error,
         "agent": agent, "provider": c.agents[agent].provider,
@@ -640,8 +772,28 @@ def answer_payload(c: Config, question: str, pack: str) -> dict[str, Any]:
         "budget": c.fixed.context_token_budget,
         "candidates": len(rag.retrieved),
         "skipped": len(rag.skipped_chunk_ids),
-        "sources": sources,
+        "sources": injected_sources(c, rag_agent, rag, question),
+        "retriever": c.retrieval.retriever,
+        "retriever_note": RETRIEVER_NOTE.get(c.retrieval.retriever, ""),
+        "compare": None,
     }
+    out["attribution"] = [] if rag.error else attribute(c, rag.text, out["sources"])
+    if compare and compare != pack and compare in c.packs:
+        cmp_agent = build_agent_for(c, agent, "rag", compare)
+        cmp = cmp_agent.answer(probe)
+        out["compare"] = {
+            "answer": cmp.text, "error": cmp.error,
+            "pack": compare, "pack_label": pack_label(c, compare),
+            "injected_tokens": cmp.injected_tokens,
+            "skipped": len(cmp.skipped_chunk_ids),
+            "sources": injected_sources(c, cmp_agent, cmp, question),
+        }
+        out["compare"]["attribution"] = ([] if cmp.error else
+                                         attribute(c, cmp.text, out["compare"]["sources"]))
+    for blk in (out, out["compare"] or {}):
+        for src in blk.get("sources", []):
+            src.pop("_raw", None)            # used for tagging; not worth shipping
+    return out
 
 
 @app.exception_handler(404)
@@ -655,13 +807,13 @@ async def not_found(request, exc) -> HTMLResponse:
 
 
 @app.get("/api/ask")
-def api_ask(q: str, pack: str = "") -> dict[str, Any]:
+def api_ask(q: str, pack: str = "", compare: str = "") -> dict[str, Any]:
     """The chat's only backend call. Reads packs, writes nothing."""
     c = cfg()
     pack = pack if pack in c.packs else next(iter(c.sweep.pack))
     if not q.strip():
         return {"answer": "", "error": "empty_question", "sources": []}
-    return answer_payload(c, q.strip(), pack)
+    return answer_payload(c, q.strip(), pack, compare or None)
 
 
 CHAT_JS = """
@@ -670,6 +822,7 @@ const thread = document.getElementById('thread');
 const form = document.getElementById('composer');
 const input = document.getElementById('q');
 const packSel = document.getElementById('pack');
+const cmpSel = document.getElementById('compare');
 const empty = document.getElementById('empty');
 const send = document.getElementById('send');
 let turns = [];
@@ -689,13 +842,60 @@ function el(tag, cls, text) {
   if (text !== undefined) n.textContent = text;   // never innerHTML: answers are data
   return n;
 }
-function drawer(summaryText, build) {
-  const d = el('details');
-  d.appendChild(el('summary', null, summaryText));
+function drawer(summaryText, build, cls) {
+  const d = el('details', cls);
+  const sum = el('summary', null, summaryText);
+  d.appendChild(sum);
   const box = el('div', 'drawer');
   build(box);
+  // A long drawer pushes its own summary off screen; a close at the bottom
+  // keeps it closable from where the reader actually is.
+  const shut = el('button', 'copy', '▴ 접기');
+  shut.type = 'button';
+  shut.addEventListener('click', () => {
+    d.open = false;
+    sum.scrollIntoView({ block: 'nearest' });
+  });
+  box.appendChild(shut);
   d.appendChild(box);
   return d;
+}
+function attribution(box, att, pack) {
+  if (!att || !att.length) return;
+  const wrap = el('div', 'attr');
+  wrap.appendChild(el('div', 'meta',
+    `${pack} 답변과 가장 가까운 근거 줄 · 사후 추정 (모델이 밝힌 인용이 아닙니다)`));
+  att.forEach(x => {
+    wrap.appendChild(el('div', 'hitline' + (x.origin === 'added' ? ' added' : ''), x.line));
+    wrap.appendChild(el('div', 'meta',
+      `${ORIGIN[x.origin] || ''} · #${x.rank ?? '-'} ${x.chunk_id} · 유사도 ${x.sim}`));
+  });
+  box.appendChild(wrap);
+}
+let NOTE = '';
+const ORIGIN = { raw: '원문', added: '확장으로 추가된 줄' };
+function cards(box, sources) {
+  box.appendChild(el('div', 'meta',
+    '검색 순위순입니다. ' + NOTE + ' 모델이 실제로 어느 문단을 썼는지는 모델이 말하지 않으므로, '
+    + '답변 아래의 "가장 가까운 근거 줄"은 사후 추정입니다.'));
+  sources.forEach((s, i) => {
+    const h = el('div', 'head');
+    h.appendChild(el('span', null, String(s.rank ?? i + 1)));
+    h.appendChild(el('b', null, s.heading || s.chunk_id));
+    h.appendChild(el('span', null, s.chunk_id));
+    if (s.score !== null) h.appendChild(el('span', null, 'score ' + s.score));
+    const card = el('div', 'src');
+    card.appendChild(h);
+    const m = s.matched || [];
+    card.appendChild(el('div', 'meta', m.length ? ('겹친 단어 · ' + m.join(', ')) : '겹친 단어 없음 (예산이 남아 채워진 문단)'));
+    if (s.n_added) card.appendChild(el('div', 'meta', `이 문단에 원문에 없는 줄 ${s.n_added}개 (확장으로 추가됨)`));
+    (s.lines || []).forEach(ln => {
+      const t = typeof ln === 'string' ? { text: ln, origin: 'raw' } : ln;   // turns saved before tagging
+      card.appendChild(el('div', 'hitline' + (t.origin === 'added' ? ' added' : ''), t.text));
+    });
+    card.appendChild(drawer('문단 전체', b => b.appendChild(el('div', 'body', s.text)), 'full'));
+    box.appendChild(card);
+  });
 }
 function render(question, a) {
   const me = el('div', 'turn me');
@@ -705,39 +905,35 @@ function render(question, a) {
   const bot = el('div', 'turn bot');
   const body = a.error ? ('오류 · ' + a.error) : a.answer;
   bot.appendChild(el('div', 'bubble' + (a.error ? ' err' : ''), body));
-  bot.appendChild(el('div', 'meta',
+  const meta = el('div', 'meta',
     `${a.agent} (${a.provider}) · ${a.pack_label} · 주입 ${a.sources.length}청크 `
     + `${a.injected_tokens}/${a.budget} tok`
     + (a.skipped ? ` · 예산 초과 ${a.skipped}건 제외` : '')
-    + ` · 검색 후보 ${a.candidates}건`));
-
-  if (a.sources.length) {
-    bot.appendChild(drawer(`근거로 쓰인 문단 ${a.sources.length}개`, box => {
-      a.sources.forEach((s, i) => {
-        const h = el('div', 'head');
-        h.appendChild(el('span', null, String(i + 1)));
-        h.appendChild(el('b', null, s.heading || s.chunk_id));
-        h.appendChild(el('span', null, s.chunk_id));
-        if (s.score !== null) h.appendChild(el('span', null, 'score ' + s.score));
-        const card = el('div', 'src');
-        card.appendChild(h);
-        card.appendChild(el('div', 'body', s.text));
-        box.appendChild(card);
-      });
-    }));
-  } else {
-    bot.appendChild(el('div', 'meta', '검색된 문단이 없습니다 — 질문의 어휘가 코퍼스와 겹치지 않습니다.'));
-  }
-
-  const tools = el('div', 'meta');
+    + ` · 검색 후보 ${a.candidates}건 · `);
   const copy = el('button', 'copy', '답변 복사');
   copy.addEventListener('click', () => {
     navigator.clipboard.writeText(body).then(
       () => { copy.textContent = '복사됨'; setTimeout(() => copy.textContent = '답변 복사', 1400); },
       () => { copy.textContent = '복사할 수 없습니다'; });
   });
-  tools.appendChild(copy);
-  bot.appendChild(tools);
+  meta.appendChild(copy);
+  bot.appendChild(meta);
+
+  // Order = reading order: the answer, then what it is compared against, and
+  // the evidence last. Answers first because the comparison IS the point;
+  // evidence last because it is what you open when the comparison surprises you.
+  const c = a.compare;
+  if (c) {
+    bot.appendChild(drawer(`${c.pack} pack으로 같은 질문을 하면`, box => {
+      box.appendChild(el('div', 'bubble' + (c.error ? ' err' : ''), c.error ? ('오류 · ' + c.error) : c.answer));
+      box.appendChild(el('div', 'meta',
+        `${c.pack_label} · 주입 ${c.sources.length}청크 ${c.injected_tokens}/${a.budget} tok`
+        + (c.skipped ? ` · 예산 초과 ${c.skipped}건 제외` : '')));
+      box.appendChild(el('div', 'meta',
+        '같은 모델·프롬프트·예산·검색기에서 인덱스만 바꾼 답변입니다. 이 차이가 pack 효과입니다. '
+        + '근거는 맨 아래에 있습니다.'));
+    }));
+  }
 
   bot.appendChild(drawer('지식 주입 없이 같은 질문을 하면', box => {
     box.appendChild(el('div', 'base',
@@ -745,6 +941,21 @@ function render(question, a) {
     box.appendChild(el('div', 'meta',
       '같은 모델, 같은 프롬프트, 자료만 뺀 baseline입니다. 이 차이가 측정 대상입니다.'));
   }));
+
+  NOTE = a.retriever_note || '';
+  attribution(bot, a.attribution, a.pack);
+  // The main pack's passage list is not rendered (user choice, 2026-09-23):
+  // its closest lines are shown above, and the payload still carries every
+  // injected chunk in a.sources, so the evidence is one API call away.
+  if (!a.sources.length) {
+    bot.appendChild(el('div', 'meta', '검색된 문단이 없습니다 — 질문의 어휘가 코퍼스와 겹치지 않습니다.'));
+  }
+  if (c && c.sources.length) {
+    bot.appendChild(drawer(`${c.pack} 근거 · 주입된 문단 ${c.sources.length}개`, box => {
+      attribution(box, c.attribution, c.pack);
+      cards(box, c.sources);
+    }));
+  }
   thread.appendChild(bot);
 }
 function busy(on) {
@@ -765,7 +976,8 @@ async function ask(question) {
 
   try {
     const r = await fetch('/api/ask?q=' + encodeURIComponent(question)
-                          + '&pack=' + encodeURIComponent(packSel.value));
+                          + '&pack=' + encodeURIComponent(packSel.value)
+                          + '&compare=' + encodeURIComponent(cmpSel.value));
     const a = await r.json();
     wait.remove();
     me.remove();
@@ -808,18 +1020,30 @@ restore();
 
 
 @app.get("/qa", response_class=HTMLResponse)
-def qa(pack: str = "", run: str | None = None) -> HTMLResponse:
+def qa(pack: str = "", compare: str = "", run: str | None = None) -> HTMLResponse:
     c = cfg()
     rid = pick_run(c, run)
     pack = pack if pack in c.packs else next(iter(c.sweep.pack))
+    compare = compare if compare in c.packs else ""
 
     opts = "".join(
         f'<option value="{e(p)}"{" selected" if p == pack else ""}>{e(pack_label(c, p))}</option>'
         for p in c.sweep.pack)
+    cmp_opts = '<option value="">비교 없음</option>' + "".join(
+        f'<option value="{e(p)}"{" selected" if p == compare else ""}>비교: {e(p)}</option>'
+        for p in c.sweep.pack)
+    qs = load_questions(c.eval.questions, c.eval.intents)
     samples = "".join(
         f'<button type="button" class="chip" data-sample="{html.escape(x.query, quote=True)}">'
         f'{e(x.query[:30])}…</button>'
-        for x in load_questions(c.eval.questions, c.eval.intents)[:3])
+        for x in qs[:3])
+    # What the chat answers from comes from the config, not from this file --
+    # a hardcoded corpus name outlives the corpus and tells the reader the wrong
+    # thing about what the model is looking at.
+    docs = ", ".join(sorted({ch.doc_id for ch in pack_for(c, pack).chunks}))
+    first = qs[0] if qs else None
+    cli = (f"kbeval ask {first.qid} --mode rag --pack {pack}" if first
+           else f"kbeval ask <qid> --mode rag --pack {pack}")
 
     twins = identical_packs(c)
     twin_note = ""
@@ -832,11 +1056,11 @@ def qa(pack: str = "", run: str | None = None) -> HTMLResponse:
                      f'찾지 못합니다.')
 
     body = f"""<h1>기술지원 Q&amp;A</h1>
-<p class="sub">OLT·BNG 운용 가이드를 근거로 답합니다. 답변마다 근거 문단을 펼쳐 볼 수 있습니다.</p>
+<p class="sub"><b>{e(docs)}</b> 를 근거로 답합니다. 답변마다 근거 문단을 펼쳐 볼 수 있습니다.</p>
 {mock_chip(c)}
 
 <noscript><div class="banner">이 화면은 자바스크립트가 필요합니다.
-같은 일을 터미널에서 하려면 <code>kbeval ask qa_001 --mode rag --pack mid</code>.</div></noscript>
+같은 일을 터미널에서 하려면 <code>{e(cli)}</code>.</div></noscript>
 
 <div class="chat" id="thread"></div>
 <div class="empty-chat" id="empty">무엇이든 물어보세요.<div class="chips"
@@ -844,8 +1068,9 @@ def qa(pack: str = "", run: str | None = None) -> HTMLResponse:
 
 <div class="composer"><form id="composer" autocomplete="off">
 <textarea id="q" rows="1" autofocus
-  placeholder="예: OLT에서 E411 인증 실패가 뜨는데 어떻게 조치하나요?"></textarea>
+  placeholder="질문을 입력하세요"></textarea>
 <select id="pack" title="지식베이스 준비 수준">{opts}</select>
+<select id="compare" title="같은 질문을 다른 pack으로도 답해 나란히 봅니다">{cmp_opts}</select>
 <button type="submit" id="send">전송</button>
 <button type="button" class="ghost" id="clear">초기화</button>
 </form></div>

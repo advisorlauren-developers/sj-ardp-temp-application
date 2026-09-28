@@ -11,9 +11,12 @@ agents:
 
 # ---- 지식 원천 (S2) ---------------------------------------------------------
 source:
-  adapter: markdown_docs        # SOURCES 레지스트리 키. jira_export로 교체 가능
+  adapter: pdf_docs             # SOURCES 레지스트리 키. jira_export로 교체 가능
   path: data/raw/docs
-  params: {glob: "**/*.md"}
+  params:
+    glob: "**/*.pdf"
+    cache_dir: data/extracted   # 추출 텍스트 = 좌표계. 캐시가 그걸 고정한다
+    headings: true              # PDF outline(없으면 패턴)으로 절 제목을 마크업
 
 # ---- 축 3: pack (ai-ready 처리 수준) ----------------------------------------
 packs:
@@ -38,7 +41,7 @@ packs:
 
 # ---- 평가 데이터 (S4) -------------------------------------------------------
 eval:
-  questions: data/eval/questions.jsonl
+  questions: data/eval/sample_questions.jsonl
   intents: [qa]
   gold_overlap_ratio: 0.3
 
